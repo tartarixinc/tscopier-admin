@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Server, MessageSquare, Zap, TrendingUp,
   FlaskConical, LogOut,
   Search, UserCircle, Activity, DollarSign, Cog, Menu, X, AlertTriangle,
-  Copy
+  Copy, Cpu
 } from 'lucide-react';
 import { ThemeToggle } from './ui/ThemeToggle';
 import { authSupabase } from '../lib/adminSupabase';
@@ -79,6 +79,7 @@ const navigation: NavGroup[] = [
     items: [
       { label: 'Listener Events', to: '/monitoring/listener-events', icon: Activity },
       { label: 'Worker Leases', to: '/monitoring/workers', icon: Activity },
+      { label: 'Copier Engine', to: '/monitoring/copier-engine', icon: Cpu },
       { label: 'Dead Letters', to: '/monitoring/dead-letters', icon: Activity },
     ],
   },

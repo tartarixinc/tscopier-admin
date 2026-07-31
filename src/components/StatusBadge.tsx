@@ -41,6 +41,8 @@ const STATUS_MAP: Record<string, Variant> = {
   completed: 'success',
   // listener engine
   active_session: 'success',
+  online: 'success',
+  offline: 'error',
 };
 
 interface StatusBadgeProps {

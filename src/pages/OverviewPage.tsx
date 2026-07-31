@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { authSupabase as adminSupabase, fetchDisplayNames } from '../lib/adminSupabase';
 import { formatNumber } from '../lib/formatters';
 import { Card, CardHeader, CardContent } from '../components/ui/Card';
@@ -25,6 +26,7 @@ interface Stats {
   topUsers: { user_id: string; display_name: string | null; trade_count: number; total_pnl: number }[];
   activeWorkers: number;
   copierPausedUsers: number;
+  copierEngineOffline: number;
 }
 
 function StatCard({ label, value, sub, color = 'text-slate-900 dark:text-slate-100' }: {
@@ -57,7 +59,7 @@ export function OverviewPage() {
         { count: totalUsers },
         { count: newToday },
         { count: newThisWeek },
-        { data: subsByPlan },
+        { data: subsRows },
         { data: brokerStatuses },
         { count: activeTelegramChannels },
         { count: signalsToday },
@@ -66,13 +68,15 @@ export function OverviewPage() {
         { data: topUsersRaw },
         { data: workerLeases },
         { count: copierPausedCount },
+        { data: activeTelegramSessions },
+        { data: sessionProfiles },
       ] = await Promise.all([
         adminSupabase.from('user_profiles').select('*', { count: 'exact', head: true }),
         adminSupabase.from('user_profiles').select('*', { count: 'exact', head: true })
           .gte('created_at', todayBoundary.toISOString()),
         adminSupabase.from('user_profiles').select('*', { count: 'exact', head: true })
           .gte('created_at', weekBoundary.toISOString()),
-        adminSupabase.from('subscriptions').select('plan'),
+        adminSupabase.from('subscriptions').select('user_id, plan, status, trial_ends_at'),
         adminSupabase.from('broker_accounts').select('connection_status'),
         adminSupabase.from('telegram_channels').select('*', { count: 'exact', head: true })
           .eq('is_active', true),
@@ -86,14 +90,16 @@ export function OverviewPage() {
         adminSupabase.from('trades')
           .select('user_id, profit, direction, entry_price, cwe_close_price')
           .gte('closed_at', weekBoundary.toISOString()),
-        adminSupabase.from('worker_session_leases').select('expires_at'),
+        adminSupabase.from('worker_session_leases').select('user_id, expires_at, role'),
         adminSupabase.from('user_profiles').select('*', { count: 'exact', head: true })
           .eq('copier_paused', true),
+        adminSupabase.from('telegram_sessions').select('user_id').eq('is_active', true),
+        adminSupabase.from('user_profiles').select('user_id, copier_paused, is_admin, admin_until'),
       ]);
 
       // Aggregate plan counts
       const planMap: Record<string, number> = {};
-      (subsByPlan ?? []).forEach((s: any) => {
+      (subsRows ?? []).forEach((s: any) => {
         planMap[s.plan] = (planMap[s.plan] ?? 0) + 1;
       });
       const subscriptionsByPlan = Object.entries(planMap).map(([plan, count]) => ({ plan, count }));
@@ -150,7 +156,58 @@ export function OverviewPage() {
         .sort((a, b) => b.trade_count - a.trade_count)
         .slice(0, 10);
 
-      const activeWorkers = (workerLeases ?? []).filter((l: any) => l.expires_at && new Date(l.expires_at) > new Date()).length;
+      const nowMs = Date.now();
+      const liveRoles = new Set(['listener', 'all']);
+      const activeLeases = (workerLeases ?? []).filter((l: any) => {
+        if (!l.expires_at || new Date(l.expires_at).getTime() <= nowMs) return false;
+        return liveRoles.has(String(l.role ?? ''));
+      });
+      const activeWorkers = activeLeases.length;
+      const activeLeaseUserIds = new Set(
+        activeLeases.map((l: any) => l.user_id).filter(Boolean)
+      );
+
+      const subByUser = new Map(
+        (subsRows ?? []).map((s: any) => [s.user_id, s])
+      );
+      const profileByUser = new Map(
+        (sessionProfiles ?? []).map((p: any) => [p.user_id, p])
+      );
+
+      function isSubscriptionActive(status: string | null | undefined, trialEndsAt: string | null | undefined): boolean {
+        const s = String(status ?? '');
+        // Match worker planLimits.isSubscriptionActive: paid active always counts;
+        // trialing only while trial_ends_at is unset/unparseable or still in the future.
+        if (s === 'active') return true;
+        if (s === 'trialing') {
+          if (!trialEndsAt) return true;
+          const end = new Date(trialEndsAt).getTime();
+          if (!Number.isFinite(end)) return true;
+          return end > nowMs;
+        }
+        return false;
+      }
+
+      function isAdminActive(isAdmin: boolean | null | undefined, adminUntil: string | null | undefined): boolean {
+        if (!isAdmin) return false;
+        if (!adminUntil) return true;
+        return new Date(adminUntil).getTime() > nowMs;
+      }
+
+      const copierEngineOffline = new Set(
+        (activeTelegramSessions ?? [])
+          .map((s: any) => s.user_id as string | null)
+          .filter((userId): userId is string => {
+            if (!userId || activeLeaseUserIds.has(userId)) return false;
+            const profile = profileByUser.get(userId);
+            if (profile?.copier_paused) return false;
+            const sub = subByUser.get(userId);
+            return (
+              isSubscriptionActive(sub?.status, sub?.trial_ends_at) ||
+              isAdminActive(profile?.is_admin, profile?.admin_until)
+            );
+          })
+      ).size;
 
       setStats({
         totalUsers: totalUsers ?? 0,
@@ -167,6 +224,7 @@ export function OverviewPage() {
         topUsers,
         activeWorkers,
         copierPausedUsers: copierPausedCount ?? 0,
+        copierEngineOffline,
       });
       setLoading(false);
     }
@@ -230,6 +288,22 @@ export function OverviewPage() {
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <StatCard label="Active Workers" value={stats.activeWorkers ?? 0} color={(stats.activeWorkers ?? 0) > 0 ? 'text-success-600' : 'text-error-600'} />
           <StatCard label="Copier Paused Users" value={stats.copierPausedUsers ?? 0} color={(stats.copierPausedUsers ?? 0) > 0 ? 'text-warning-600' : 'text-slate-900 dark:text-slate-100'} />
+          <StatCard
+            label="Copier Engine Offline"
+            value={stats.copierEngineOffline ?? 0}
+            color={(stats.copierEngineOffline ?? 0) > 0 ? 'text-error-600' : 'text-slate-900 dark:text-slate-100'}
+          />
+          {(stats.copierEngineOffline ?? 0) > 0 && (
+            <div className="stat-card flex flex-col justify-center">
+              <Link
+                to="/monitoring/copier-engine"
+                className="text-sm font-medium text-primary-600 dark:text-primary-400 hover:underline"
+              >
+                Manage Copier Engines →
+              </Link>
+              <p className="text-xs text-slate-400 mt-1">Reconnect offline engines from admin</p>
+            </div>
+          )}
         </div>
       </section>
 

@@ -26,6 +26,7 @@ import { AffiliatesPage } from './pages/AffiliatesPage';
 import { PresetsPage } from './pages/PresetsPage';
 import { AppSettingsPage } from './pages/AppSettingsPage';
 import { CopierLogsPage } from './pages/CopierLogsPage';
+import { CopierEnginePage } from './pages/CopierEnginePage';
 
 function ProtectedLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -59,6 +60,7 @@ export default function App() {
         <Route path="/backtests/:runId" element={<ProtectedLayout><BacktestRunDetailPage /></ProtectedLayout>} />
         <Route path="/monitoring/listener-events" element={<ProtectedLayout><ListenerEventsPage /></ProtectedLayout>} />
         <Route path="/monitoring/workers" element={<ProtectedLayout><WorkerLeasesPage /></ProtectedLayout>} />
+        <Route path="/monitoring/copier-engine" element={<ProtectedLayout><CopierEnginePage /></ProtectedLayout>} />
         <Route path="/monitoring/dead-letters" element={<ProtectedLayout><DeadLettersPage /></ProtectedLayout>} />
         <Route path="/affiliates" element={<ProtectedLayout><AffiliatesPage /></ProtectedLayout>} />
         <Route path="/presets" element={<ProtectedLayout><PresetsPage /></ProtectedLayout>} />
