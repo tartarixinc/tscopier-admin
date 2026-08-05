@@ -47,6 +47,9 @@ interface TelegramAccount {
   created_at: string;
   telegram_user_id: string | null;
   linked_at: string | null;
+  is_online: boolean;
+  worker_id: string | null;
+  lease_expires_at: string | null;
 }
 
 interface BrokerRow {
@@ -79,6 +82,21 @@ interface TgSessionRow {
   is_active: boolean;
   listener_engine: string | null;
   created_at: string | null;
+}
+
+interface LeaseRow {
+  worker_id: string | null;
+  role: string | null;
+  expires_at: string | null;
+  updated_at: string | null;
+}
+
+const LIVE_ROLES = new Set(['listener', 'all', 'channel_listener']);
+
+function isLeaseLive(lease: LeaseRow | null | undefined): boolean {
+  if (!lease?.expires_at) return false;
+  if (!LIVE_ROLES.has(String(lease.role ?? ''))) return false;
+  return new Date(lease.expires_at).getTime() > Date.now();
 }
 
 interface TgClaimRow {
@@ -187,6 +205,7 @@ export function UserDetailPage() {
         { data: tgSessionRaw },
         { data: tgClaimRaw },
         { data: reportRows },
+        { data: leaseRaw },
       ] = await Promise.all([
         adminSupabase.from('user_profiles').select('*').eq('user_id', userId!).maybeSingle(),
         adminSupabase.from('subscriptions').select('*').eq('user_id', userId!).maybeSingle(),
@@ -199,19 +218,24 @@ export function UserDetailPage() {
         adminSupabase.from('trade_execution_logs').select('id', { count: 'exact', head: true }).eq('user_id', userId!),
         adminSupabase.from('telegram_sessions').select('phone_number, is_active, listener_engine, created_at').eq('user_id', userId!).order('created_at', { ascending: false }).limit(1).maybeSingle(),
         adminSupabase.from('telegram_account_claims').select('telegram_user_id, linked_at').eq('user_id', userId!).maybeSingle(),
+        adminSupabase.from('worker_session_leases').select('worker_id, role, expires_at, updated_at').eq('user_id', userId!).order('updated_at', { ascending: false }).limit(1).maybeSingle(),
       ]);
 
       setProfile(prof as UserProfile);
       setSubscription(sub as Subscription);
       const tgSession = tgSessionRaw as TgSessionRow | null;
       const tgClaim = tgClaimRaw as TgClaimRow | null;
-      setTelegram(tgSession || tgClaim ? {
+      const lease = leaseRaw as LeaseRow | null;
+      setTelegram(tgSession || tgClaim || lease ? {
         phone_number: tgSession?.phone_number ?? null,
         is_active: tgSession?.is_active ?? false,
         listener_engine: tgSession?.listener_engine ?? null,
         created_at: tgSession?.created_at ?? tgClaim?.linked_at ?? '',
         telegram_user_id: tgClaim?.telegram_user_id?.toString() ?? null,
         linked_at: tgClaim?.linked_at ?? null,
+        is_online: isLeaseLive(lease) || Boolean(tgSession?.is_active),
+        worker_id: lease?.worker_id ?? null,
+        lease_expires_at: lease?.expires_at ?? null,
       } : null);
       setBrokers((brok ?? []) as BrokerRow[]);
       setChannels((chans ?? []) as ChannelRow[]);
@@ -362,7 +386,7 @@ export function UserDetailPage() {
                 <>
                   <InfoRow label="Phone" value={telegram.phone_number ? <span className="font-mono text-xs">{telegram.phone_number}</span> : null} />
                   <InfoRow label="Session Status" value={
-                    telegram.is_active
+                    telegram.is_online
                       ? <span className="text-success-600 dark:text-success-400 font-medium">Connected</span>
                       : <span className="text-warning-600 dark:text-warning-400 font-medium">Disconnected</span>
                   } />
@@ -370,6 +394,8 @@ export function UserDetailPage() {
                   <InfoRow label="Telegram ID" value={telegram.telegram_user_id ? <span className="font-mono text-xs">{telegram.telegram_user_id}</span> : null} />
                   <InfoRow label="Linked At" value={telegram.linked_at ? formatDate(telegram.linked_at) : null} />
                   <InfoRow label="Session Created" value={telegram.created_at ? formatDate(telegram.created_at) : null} />
+                  {telegram.worker_id && <InfoRow label="Listener Worker" value={<span className="font-mono text-xs">{telegram.worker_id}</span>} />}
+                  {telegram.lease_expires_at && <InfoRow label="Lease Expires" value={formatDate(telegram.lease_expires_at)} />}
                 </>
               ) : (
                 <p className="text-slate-400 text-sm">No Telegram account connected</p>
