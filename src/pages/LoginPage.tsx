@@ -4,6 +4,9 @@ import { authSupabase } from '../lib/adminSupabase';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { Alert } from '../components/ui/Alert';
+import { adminEnvSessionKey, getAdminEnv, ENVIRONMENTS, projectRefOf } from '../lib/environment';
+
+const activeEnv = getAdminEnv();
 
 export function LoginPage() {
   const [email, setEmail] = useState('');
@@ -44,10 +47,10 @@ export function LoginPage() {
       return;
     }
 
-    // 3. Store session flag with display name for the shell header
-    sessionStorage.setItem('admin_authed', 'true');
-    sessionStorage.setItem('admin_user_id', authData.user.id);
-    sessionStorage.setItem('admin_display_name', profile.display_name ?? authData.user.email ?? '');
+    // 3. Store per-env session flag with display name for the shell header
+    sessionStorage.setItem(adminEnvSessionKey('admin_authed'), 'true');
+    sessionStorage.setItem(adminEnvSessionKey('admin_user_id'), authData.user.id);
+    sessionStorage.setItem(adminEnvSessionKey('admin_display_name'), profile.display_name ?? authData.user.email ?? '');
     window.location.href = '/';
   }
 
@@ -63,6 +66,10 @@ export function LoginPage() {
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
             Sign in with your admin account
           </p>
+          <span className={`inline-flex items-center gap-1.5 mt-3 px-2.5 py-1 rounded-full text-[11px] font-semibold ${activeEnv === 'staging' ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400' : 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400'}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${activeEnv === 'staging' ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+            {ENVIRONMENTS[activeEnv].label} environment · {projectRefOf(activeEnv)}
+          </span>
         </div>
 
         {/* Card */}

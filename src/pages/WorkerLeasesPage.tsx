@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { authSupabase as adminSupabase, fetchDisplayNames } from '../lib/adminSupabase';
 import { formatDate } from '../lib/formatters';
 import { DataTable } from '../components/DataTable';
-import { StatusBadge } from '../components/StatusBadge';
 import { UserLink } from '../components/UserLink';
 import { Card } from '../components/ui/Card';
 import { Alert } from '../components/ui/Alert';
@@ -30,10 +29,10 @@ export function WorkerLeasesPage() {
         .select('user_id, worker_id, role, shard_id, shard_count, expires_at, updated_at')
         .order('expires_at', { ascending: false });
 
-      const userIds = [...new Set((rows ?? []).map((r: any) => r.user_id).filter(Boolean))];
+      const userIds = [...new Set((rows ?? []).map((r) => r.user_id).filter(Boolean))];
       const displayNames = await fetchDisplayNames(userIds);
 
-      setData((rows ?? []).map((r: any) => ({ ...r, display_name: displayNames[r.user_id] ?? null })));
+      setData((rows ?? []).map((r) => ({ ...r, display_name: displayNames[r.user_id] ?? null })));
       setLoading(false);
     })();
   }, []);

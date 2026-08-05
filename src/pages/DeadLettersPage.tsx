@@ -60,11 +60,11 @@ export function DeadLettersPage() {
       if (cancelled) return;
       if (error) { setLoading(false); return; }
 
-      const userIds = [...new Set((rows ?? []).map((r: any) => r.user_id).filter(Boolean))];
+      const userIds = [...new Set((rows ?? []).map((r) => r.user_id).filter(Boolean))];
       const displayNames = await fetchDisplayNames(userIds);
 
       if (cancelled) return;
-      setData((rows ?? []).map((r: any) => ({
+      setData((rows ?? []).map((r) => ({
         ...r,
         user_display_name: displayNames[r.user_id] ?? null,
       })));

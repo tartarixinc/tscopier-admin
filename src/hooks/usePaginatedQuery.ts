@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 
-interface UsePaginatedQueryOptions {
-  queryFn: (opts: { from: number; to: number }) => any;
+interface UsePaginatedQueryOptions<T> {
+  queryFn: (opts: { from: number; to: number }) => Promise<{ data: T[] | null; error: { message: string } | null; count: number | null }>;
   pageSize?: number;
   deps?: unknown[];
 }
@@ -23,7 +23,7 @@ export function usePaginatedQuery<T>({
   queryFn,
   pageSize: initialPageSize = 50,
   deps = [],
-}: UsePaginatedQueryOptions): PaginatedResult<T> {
+}: UsePaginatedQueryOptions<T>): PaginatedResult<T> {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSizeState] = useState(initialPageSize);
   const [data, setData] = useState<T[]>([]);

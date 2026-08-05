@@ -11,10 +11,10 @@
  * - Confirm lease became live after reconnect
  */
 
-// @ts-ignore Deno runtime
+// @ts-expect-error Deno runtime
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4"
 
-// @ts-ignore Deno globals
+// @ts-expect-error Deno globals
 declare const Deno: {
   env: { get(name: string): string | undefined }
   serve: (handler: (req: Request) => Response | Promise<Response>) => void

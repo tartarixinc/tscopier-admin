@@ -99,19 +99,19 @@ export function OverviewPage() {
 
       // Aggregate plan counts
       const planMap: Record<string, number> = {};
-      (subsRows ?? []).forEach((s: any) => {
+      (subsRows ?? []).forEach((s) => {
         planMap[s.plan] = (planMap[s.plan] ?? 0) + 1;
       });
       const subscriptionsByPlan = Object.entries(planMap).map(([plan, count]) => ({ plan, count }));
 
       // Broker statuses
       const statusMap: Record<string, number> = {};
-      (brokerStatuses ?? []).forEach((b: any) => {
+      (brokerStatuses ?? []).forEach((b) => {
         statusMap[b.connection_status ?? 'unknown'] = (statusMap[b.connection_status ?? 'unknown'] ?? 0) + 1;
       });
 
       // Compute P&L from profit column if set, otherwise estimate from entry/close price
-      function computePnl(t: any): number {
+      function computePnl(t: { profit: number | null; cwe_close_price: number | null; entry_price: number | null; direction: string | null; lot_size?: number | null }): number {
         if (t.profit != null) return Number(t.profit);
         if (t.cwe_close_price != null && t.entry_price != null) {
           const diff = t.direction === 'buy'
@@ -125,21 +125,21 @@ export function OverviewPage() {
       // Trade stats today (closed trades)
       const todayTrades = tradeStats ?? [];
       const tradesToday = todayTrades.length;
-      const lotsToday = todayTrades.reduce((sum: number, t: any) => sum + (Number(t.lot_size) ?? 0), 0);
+      const lotsToday = todayTrades.reduce((sum: number, t) => sum + Number(t.lot_size ?? 0), 0);
 
 
       // Signal stats
       const sigMap: Record<string, number> = {};
-      (signalsByStatus ?? []).forEach((s: any) => {
+      (signalsByStatus ?? []).forEach((s) => {
         sigMap[s.status ?? 'unknown'] = (sigMap[s.status ?? 'unknown'] ?? 0) + 1;
       });
       const signalsByStatusArr = Object.entries(sigMap).map(([status, count]) => ({ status, count }));
 
       // Top users — fetch display names separately
-      const uniqueUserIds = [...new Set((topUsersRaw ?? []).map((t: any) => t.user_id).filter(Boolean))];
+      const uniqueUserIds = [...new Set((topUsersRaw ?? []).map((t) => t.user_id).filter(Boolean))];
       const displayNames = await fetchDisplayNames(uniqueUserIds);
       const userMap: Record<string, { user_id: string; display_name: string | null; trade_count: number; total_pnl: number }> = {};
-      (topUsersRaw ?? []).forEach((t: any) => {
+      (topUsersRaw ?? []).forEach((t) => {
         if (!t.user_id) return;
         if (!userMap[t.user_id]) {
           userMap[t.user_id] = {
@@ -158,20 +158,20 @@ export function OverviewPage() {
 
       const nowMs = Date.now();
       const liveRoles = new Set(['listener', 'all']);
-      const activeLeases = (workerLeases ?? []).filter((l: any) => {
+      const activeLeases = (workerLeases ?? []).filter((l) => {
         if (!l.expires_at || new Date(l.expires_at).getTime() <= nowMs) return false;
         return liveRoles.has(String(l.role ?? ''));
       });
       const activeWorkers = activeLeases.length;
       const activeLeaseUserIds = new Set(
-        activeLeases.map((l: any) => l.user_id).filter(Boolean)
+        activeLeases.map((l) => l.user_id).filter(Boolean)
       );
 
       const subByUser = new Map(
-        (subsRows ?? []).map((s: any) => [s.user_id, s])
+        (subsRows ?? []).map((s) => [s.user_id, s])
       );
       const profileByUser = new Map(
-        (sessionProfiles ?? []).map((p: any) => [p.user_id, p])
+        (sessionProfiles ?? []).map((p) => [p.user_id, p])
       );
 
       function isSubscriptionActive(status: string | null | undefined, trialEndsAt: string | null | undefined): boolean {
@@ -196,7 +196,7 @@ export function OverviewPage() {
 
       const copierEngineOffline = new Set(
         (activeTelegramSessions ?? [])
-          .map((s: any) => s.user_id as string | null)
+          .map((s) => s.user_id as string | null)
           .filter((userId): userId is string => {
             if (!userId || activeLeaseUserIds.has(userId)) return false;
             const profile = profileByUser.get(userId);
@@ -357,7 +357,7 @@ export function OverviewPage() {
                     cx="50%"
                     cy="50%"
                     outerRadius={80}
-                    label={(props: any) => `${props.plan} ${((props.percent ?? 0) * 100).toFixed(0)}%`}
+                    label={(props: { plan?: string; percent?: number }) => `${props.plan ?? ''} ${((props.percent ?? 0) * 100).toFixed(0)}%`}
                     labelLine={false}
                   >
                     {(stats.subscriptionsByPlan ?? []).map((_, i) => (

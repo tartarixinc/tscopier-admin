@@ -58,8 +58,8 @@ export function TradeExecutionLogsPage() {
       if (cancelled) return;
       if (error) { setLoading(false); return; }
 
-      const userIds = [...new Set((rows ?? []).map((r: any) => r.user_id).filter(Boolean))];
-      const brokerIds = [...new Set((rows ?? []).map((r: any) => r.broker_account_id).filter(Boolean))];
+      const userIds = [...new Set((rows ?? []).map((r) => r.user_id).filter(Boolean))];
+      const brokerIds = [...new Set((rows ?? []).map((r) => r.broker_account_id).filter(Boolean))];
 
       const [displayNames, brokerLabels] = await Promise.all([
         fetchDisplayNames(userIds),
@@ -67,14 +67,14 @@ export function TradeExecutionLogsPage() {
           ? adminSupabase.from('broker_accounts').select('id, label').in('id', brokerIds)
               .then(({ data }) => {
                 const m: Record<string, string> = {};
-                (data ?? []).forEach((b: any) => { m[b.id] = b.label; });
+                (data ?? []).forEach((b) => { m[b.id] = b.label; });
                 return m;
               })
           : Promise.resolve({} as Record<string, string>),
       ]);
 
       if (cancelled) return;
-      setData((rows ?? []).map((r: any) => ({
+      setData((rows ?? []).map((r) => ({
         ...r,
         user_display_name: displayNames[r.user_id] ?? null,
         broker_label: brokerLabels[r.broker_account_id] ?? null,

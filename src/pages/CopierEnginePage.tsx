@@ -179,7 +179,7 @@ export function CopierEnginePage() {
       .eq('is_active', true)
       .order('updated_at', { ascending: false });
 
-    const userIds = [...new Set((sessions ?? []).map((s: any) => s.user_id).filter(Boolean))];
+    const userIds = [...new Set((sessions ?? []).map((s) => s.user_id).filter(Boolean))];
 
     if (userIds.length === 0) {
       setData([]);
@@ -204,16 +204,16 @@ export function CopierEnginePage() {
     ]);
 
     const leaseByUser = new Map(
-      (leases ?? []).map((l: any) => [l.user_id, l])
+      (leases ?? []).map((l) => [l.user_id, l])
     );
     const profileByUser = new Map(
-      (profiles ?? []).map((p: any) => [p.user_id, p])
+      (profiles ?? []).map((p) => [p.user_id, p])
     );
     const subByUser = new Map(
-      (subs ?? []).map((s: any) => [s.user_id, s])
+      (subs ?? []).map((s) => [s.user_id, s])
     );
 
-    const rows: EngineRow[] = (sessions ?? []).map((s: any) => {
+    const rows: EngineRow[] = (sessions ?? []).map((s) => {
       const lease = leaseByUser.get(s.user_id) ?? null;
       const profile = profileByUser.get(s.user_id);
       const sub = subByUser.get(s.user_id);

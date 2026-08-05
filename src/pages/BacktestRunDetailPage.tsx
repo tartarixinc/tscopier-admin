@@ -49,14 +49,37 @@ function SummaryCard({ summary }: { summary: Record<string, unknown> }) {
   );
 }
 
+interface BacktestTradeRow {
+  id: string;
+  symbol: string;
+  direction: string;
+  outcome: string;
+  tps_hit: number | null;
+  pnl: number | null;
+  pnl_r: number | null;
+  closed_at: string | null;
+}
+
+interface EquityPointRow {
+  ts: string;
+  equity: number;
+  balance: number;
+  drawdown_pct: number;
+}
+
+interface RunChannelRow {
+  channel_id: string;
+  telegram_channels: { display_name: string | null; channel_username: string | null }[] | null;
+}
+
 export function BacktestRunDetailPage() {
   const { runId } = useParams<{ runId: string }>();
   const navigate = useNavigate();
 
   const [run, setRun] = useState<BacktestRun | null>(null);
-  const [trades, setTrades] = useState<any[]>([]);
-  const [equityPoints, setEquityPoints] = useState<any[]>([]);
-  const [channels, setChannels] = useState<any[]>([]);
+  const [trades, setTrades] = useState<BacktestTradeRow[]>([]);
+  const [equityPoints, setEquityPoints] = useState<EquityPointRow[]>([]);
+  const [channels, setChannels] = useState<RunChannelRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -76,7 +99,7 @@ export function BacktestRunDetailPage() {
 
       setRun(r as BacktestRun);
       setTrades(t ?? []);
-      setEquityPoints((ep ?? []).map((p: any) => ({ ...p, ts: p.ts?.slice(0, 10) })));
+      setEquityPoints((ep ?? []).map((p) => ({ ...p, ts: p.ts?.slice(0, 10) })));
       setChannels(ch ?? []);
       setLoading(false);
     }
@@ -169,10 +192,10 @@ export function BacktestRunDetailPage() {
               <tbody>
                 {channels.length === 0 ? (
                   <tr><td colSpan={2} className="text-center py-6 text-slate-400">No channels</td></tr>
-                ) : channels.map((c: any) => (
+                ) : channels.map((c) => (
                   <tr key={c.channel_id}>
-                    <td className="font-medium">{c.telegram_channels?.display_name ?? '—'}</td>
-                    <td className="text-slate-500 text-xs">@{c.telegram_channels?.channel_username ?? '—'}</td>
+                    <td className="font-medium">{c.telegram_channels?.[0]?.display_name ?? '—'}</td>
+                    <td className="text-slate-500 text-xs">@{c.telegram_channels?.[0]?.channel_username ?? '—'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -202,7 +225,7 @@ export function BacktestRunDetailPage() {
             <tbody>
               {trades.length === 0 ? (
                 <tr><td colSpan={7} className="text-center py-8 text-slate-400">No trades</td></tr>
-              ) : trades.slice(0, 100).map((t: any) => (
+              ) : trades.slice(0, 100).map((t) => (
                 <tr key={t.id}>
                   <td className="font-bold">{t.symbol}</td>
                   <td><StatusBadge status={t.direction} /></td>
