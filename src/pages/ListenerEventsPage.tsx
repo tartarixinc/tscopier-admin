@@ -55,8 +55,8 @@ export function ListenerEventsPage() {
       if (cancelled) return;
       if (error) { setLoading(false); return; }
 
-      const userIds = [...new Set((rows ?? []).map((r: any) => r.user_id).filter(Boolean))];
-      const channelIds = [...new Set((rows ?? []).map((r: any) => r.channel_row_id).filter(Boolean))];
+      const userIds = [...new Set((rows ?? []).map((r) => r.user_id).filter(Boolean))];
+      const channelIds = [...new Set((rows ?? []).map((r) => r.channel_row_id).filter(Boolean))];
 
       const [displayNames, channelNames] = await Promise.all([
         fetchDisplayNames(userIds),
@@ -64,14 +64,14 @@ export function ListenerEventsPage() {
           ? adminSupabase.from('telegram_channels').select('id, display_name').in('id', channelIds)
               .then(({ data }) => {
                 const m: Record<string, string | null> = {};
-                (data ?? []).forEach((c: any) => { m[c.id] = c.display_name ?? null; });
+                (data ?? []).forEach((c) => { m[c.id] = c.display_name ?? null; });
                 return m;
               })
           : Promise.resolve({} as Record<string, string | null>),
       ]);
 
       if (cancelled) return;
-      setData((rows ?? []).map((r: any) => ({
+      setData((rows ?? []).map((r) => ({
         ...r,
         user_display_name: displayNames[r.user_id] ?? null,
         channel_name: channelNames[r.channel_row_id] ?? null,

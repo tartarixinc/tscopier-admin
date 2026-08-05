@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Server, MessageSquare, Zap, TrendingUp, FlaskConical, Mail, Send, ScrollText } from 'lucide-react';
+import { ArrowLeft, Server, MessageSquare, Zap, TrendingUp, FlaskConical, Mail, Send, ScrollText, ChevronDown } from 'lucide-react';
 import { authSupabase as adminSupabase } from '../lib/adminSupabase';
-import { formatDate, formatDateOnly, formatCurrency, formatRelative, truncate } from '../lib/formatters';
+import { formatDate, formatDateOnly, formatCurrency } from '../lib/formatters';
 import { Card, CardHeader, CardContent } from '../components/ui/Card';
 import { StatusBadge } from '../components/StatusBadge';
-import { JsonViewer } from '../components/JsonViewer';
 import { Button } from '../components/ui/Button';
+import { UserActivityTabs } from '../components/user/UserActivityTabs';
 
 interface UserProfile {
   user_id: string;
@@ -49,6 +49,43 @@ interface TelegramAccount {
   linked_at: string | null;
 }
 
+interface BrokerRow {
+  id: string;
+  label: string;
+  platform: string | null;
+  connection_status: string | null;
+  last_balance: number | null;
+}
+
+interface ChannelRow {
+  id: string;
+  display_name: string | null;
+  channel_username: string | null;
+  is_active: boolean;
+  last_live_at: string | null;
+}
+
+interface TradeReportRow {
+  id: string;
+  symbol: string | null;
+  direction: string | null;
+  reason: string | null;
+  status: string | null;
+  created_at: string | null;
+}
+
+interface TgSessionRow {
+  phone_number: string | null;
+  is_active: boolean;
+  listener_engine: string | null;
+  created_at: string | null;
+}
+
+interface TgClaimRow {
+  telegram_user_id: number | null;
+  linked_at: string | null;
+}
+
 function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex items-start gap-4 py-2 border-b border-slate-100 dark:border-slate-700 last:border-0">
@@ -65,18 +102,17 @@ export function UserDetailPage() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [telegram, setTelegram] = useState<TelegramAccount | null>(null);
-  const [brokers, setBrokers] = useState<any[]>([]);
-  const [channels, setChannels] = useState<any[]>([]);
-  const [signals, setSignals] = useState<any[]>([]);
-  const [trades, setTrades] = useState<any[]>([]);
-  const [backtestCount, setBacktestCount] = useState(0);
-  const [copierLogs, setCopierLogs] = useState<any[]>([]);
+  const [brokers, setBrokers] = useState<BrokerRow[]>([]);
+  const [channels, setChannels] = useState<ChannelRow[]>([]);
+  const [reportedTrades, setReportedTrades] = useState<TradeReportRow[]>([]);
+  const [counts, setCounts] = useState({ signals: 0, trades: 0, logs: 0, backtests: 0 });
   const [loading, setLoading] = useState(true);
-  const [expandedSignalId, setExpandedSignalId] = useState<string | null>(null);
-  const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
   const [emailSending, setEmailSending] = useState<string | null>(null);
   const [emailResult, setEmailResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [showEmailMenu, setShowEmailMenu] = useState(false);
+  const [showBrokers, setShowBrokers] = useState(false);
+  const [showChannels, setShowChannels] = useState(false);
+  const [showReportedTrades, setShowReportedTrades] = useState(false);
 
   const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
   const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -144,45 +180,48 @@ export function UserDetailPage() {
         { data: sub },
         { data: brok },
         { data: chans },
-        { data: sigs },
-        { data: trds },
         { count: btCount },
-        { data: tgSession },
-        { data: tgClaim },
-        { data: copierLogsRaw },
+        { count: sigCount },
+        { count: tradeCount },
+        { count: logCount },
+        { data: tgSessionRaw },
+        { data: tgClaimRaw },
+        { data: reportRows },
       ] = await Promise.all([
         adminSupabase.from('user_profiles').select('*').eq('user_id', userId!).maybeSingle(),
         adminSupabase.from('subscriptions').select('*').eq('user_id', userId!).maybeSingle(),
         adminSupabase.from('broker_accounts').select('id, label, platform, connection_status, last_balance').eq('user_id', userId!),
         adminSupabase.from('telegram_channels').select('id, display_name, channel_username, is_active, last_live_at').eq('user_id', userId!),
-        adminSupabase.from('signals').select('id, status, raw_message, created_at, telegram_channels(display_name)').eq('user_id', userId!).order('created_at', { ascending: false }).limit(20),
-        adminSupabase.from('trades').select('id, symbol, direction, status, profit, opened_at').eq('user_id', userId!).order('opened_at', { ascending: false }).limit(20),
+        adminSupabase.from('trade_reports').select('id, symbol, direction, reason, status, created_at').eq('user_id', userId!).order('created_at', { ascending: false }),
         adminSupabase.from('backtest_runs').select('*', { count: 'exact', head: true }).eq('user_id', userId!),
+        adminSupabase.from('signals').select('id', { count: 'exact', head: true }).eq('user_id', userId!),
+        adminSupabase.from('trades').select('id', { count: 'exact', head: true }).eq('user_id', userId!),
+        adminSupabase.from('trade_execution_logs').select('id', { count: 'exact', head: true }).eq('user_id', userId!),
         adminSupabase.from('telegram_sessions').select('phone_number, is_active, listener_engine, created_at').eq('user_id', userId!).order('created_at', { ascending: false }).limit(1).maybeSingle(),
         adminSupabase.from('telegram_account_claims').select('telegram_user_id, linked_at').eq('user_id', userId!).maybeSingle(),
-        adminSupabase.from('trade_execution_logs')
-          .select('id, broker_account_id, signal_id, action, status, error_message, request_payload, response_payload, created_at')
-          .eq('user_id', userId!)
-          .order('created_at', { ascending: false })
-          .limit(30),
       ]);
 
       setProfile(prof as UserProfile);
       setSubscription(sub as Subscription);
+      const tgSession = tgSessionRaw as TgSessionRow | null;
+      const tgClaim = tgClaimRaw as TgClaimRow | null;
       setTelegram(tgSession || tgClaim ? {
-        phone_number: (tgSession as any)?.phone_number ?? null,
-        is_active: (tgSession as any)?.is_active ?? false,
-        listener_engine: (tgSession as any)?.listener_engine ?? null,
-        created_at: (tgSession as any)?.created_at ?? (tgClaim as any)?.linked_at ?? '',
-        telegram_user_id: (tgClaim as any)?.telegram_user_id?.toString() ?? null,
-        linked_at: (tgClaim as any)?.linked_at ?? null,
+        phone_number: tgSession?.phone_number ?? null,
+        is_active: tgSession?.is_active ?? false,
+        listener_engine: tgSession?.listener_engine ?? null,
+        created_at: tgSession?.created_at ?? tgClaim?.linked_at ?? '',
+        telegram_user_id: tgClaim?.telegram_user_id?.toString() ?? null,
+        linked_at: tgClaim?.linked_at ?? null,
       } : null);
-      setBrokers(brok ?? []);
-      setChannels(chans ?? []);
-      setSignals(sigs ?? []);
-      setTrades(trds ?? []);
-      setBacktestCount(btCount ?? 0);
-      setCopierLogs(copierLogsRaw ?? []);
+      setBrokers((brok ?? []) as BrokerRow[]);
+      setChannels((chans ?? []) as ChannelRow[]);
+      setReportedTrades((reportRows ?? []) as TradeReportRow[]);
+      setCounts({
+        signals: sigCount ?? 0,
+        trades: tradeCount ?? 0,
+        logs: logCount ?? 0,
+        backtests: btCount ?? 0,
+      });
       setLoading(false);
     }
     load();
@@ -341,18 +380,18 @@ export function UserDetailPage() {
       </div>
 
       {/* Quick stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
         {[
           { icon: Server, label: 'Broker Accounts', value: brokers.length },
           { icon: MessageSquare, label: 'Telegram Channels', value: channels.length },
-          { icon: Zap, label: 'Signals (recent)', value: signals.length },
-          { icon: TrendingUp, label: 'Trades (recent)', value: trades.length },
-          { icon: ScrollText, label: 'Copier Logs', value: copierLogs.length },
-          { icon: FlaskConical, label: 'Backtests', value: backtestCount },
+          { icon: Zap, label: 'Signals', value: counts.signals },
+          { icon: TrendingUp, label: 'Trades', value: counts.trades },
+          { icon: ScrollText, label: 'Copier Logs', value: counts.logs },
+          { icon: FlaskConical, label: 'Backtests', value: counts.backtests },
         ].map(stat => (
           <div key={stat.label} className="stat-card text-center">
             <stat.icon className="w-5 h-5 mx-auto text-primary-500 mb-2" />
-            <p className="text-2xl font-bold text-slate-900 dark:text-slate-100">{stat.value}</p>
+            <p className="text-2xl font-bold text-slate-900 dark:text-slate-100">{stat.value.toLocaleString()}</p>
             <p className="text-xs text-slate-400 mt-0.5">{stat.label}</p>
           </div>
         ))}
@@ -360,171 +399,103 @@ export function UserDetailPage() {
 
       {/* Broker accounts */}
       <Card>
-        <CardHeader><h3 className="text-sm font-semibold">Broker Accounts ({brokers.length})</h3></CardHeader>
-        <div className="overflow-x-auto">
-          <table className="table-base">
-            <thead><tr><th>Label</th><th>Platform</th><th>Status</th><th>Balance</th></tr></thead>
-            <tbody>
-              {brokers.length === 0 ? (
-                <tr><td colSpan={4} className="text-center py-6 text-slate-400">No broker accounts</td></tr>
-              ) : brokers.map((b: any) => (
-                <tr key={b.id}>
-                  <td className="font-medium">{b.label}</td>
-                  <td>{b.platform}</td>
-                  <td><StatusBadge status={b.connection_status} /></td>
-                  <td>{formatCurrency(b.last_balance)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <CardHeader>
+          <button
+            className="flex items-center justify-between w-full gap-2 group"
+            onClick={() => setShowBrokers(!showBrokers)}
+          >
+            <h3 className="text-sm font-semibold">Broker Accounts ({brokers.length})</h3>
+            <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showBrokers ? 'rotate-180' : ''}`} />
+          </button>
+        </CardHeader>
+        {showBrokers && (
+          <div className="overflow-x-auto">
+            <table className="table-base">
+              <thead><tr><th>Label</th><th>Platform</th><th>Status</th><th>Balance</th></tr></thead>
+              <tbody>
+                {brokers.length === 0 ? (
+                  <tr><td colSpan={4} className="text-center py-6 text-slate-400">No broker accounts</td></tr>
+                ) : brokers.map((b: BrokerRow) => (
+                  <tr key={b.id}>
+                    <td className="font-medium">{b.label}</td>
+                    <td>{b.platform}</td>
+                    <td><StatusBadge status={b.connection_status} /></td>
+                    <td>{formatCurrency(b.last_balance)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </Card>
 
       {/* Telegram channels */}
       <Card>
-        <CardHeader><h3 className="text-sm font-semibold">Telegram Channels ({channels.length})</h3></CardHeader>
-        <div className="overflow-x-auto">
-          <table className="table-base">
-            <thead><tr><th>Name</th><th>Username</th><th>Active</th><th>Last Live</th></tr></thead>
-            <tbody>
-              {channels.length === 0 ? (
-                <tr><td colSpan={4} className="text-center py-6 text-slate-400">No channels</td></tr>
-              ) : channels.map((c: any) => (
-                <tr key={c.id}>
-                  <td className="font-medium">{c.display_name}</td>
-                  <td className="text-slate-500">{c.channel_username}</td>
-                  <td><StatusBadge status={c.is_active ? 'active' : 'inactive'} /></td>
-                  <td className="text-xs text-slate-400">{formatDate(c.last_live_at)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <CardHeader>
+          <button
+            className="flex items-center justify-between w-full gap-2 group"
+            onClick={() => setShowChannels(!showChannels)}
+          >
+            <h3 className="text-sm font-semibold">Telegram Channels ({channels.length})</h3>
+            <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showChannels ? 'rotate-180' : ''}`} />
+          </button>
+        </CardHeader>
+        {showChannels && (
+          <div className="overflow-x-auto">
+            <table className="table-base">
+              <thead><tr><th>Name</th><th>Username</th><th>Active</th><th>Last Live</th></tr></thead>
+              <tbody>
+                {channels.length === 0 ? (
+                  <tr><td colSpan={4} className="text-center py-6 text-slate-400">No channels</td></tr>
+                ) : channels.map((c: ChannelRow) => (
+                  <tr key={c.id}>
+                    <td className="font-medium">{c.display_name}</td>
+                    <td className="text-slate-500">{c.channel_username}</td>
+                    <td><StatusBadge status={c.is_active ? 'active' : 'inactive'} /></td>
+                    <td className="text-xs text-slate-400">{formatDate(c.last_live_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </Card>
 
-      {/* Recent signals */}
+      {/* Reported trades */}
       <Card>
-        <CardHeader><h3 className="text-sm font-semibold">Recent Signals (last 20)</h3></CardHeader>
-        <div className="overflow-x-auto">
-          <table className="table-base">
-            <thead><tr><th>Status</th><th>Channel</th><th>Message</th><th>Created</th></tr></thead>
-            <tbody>
-              {signals.length === 0 ? (
-                <tr><td colSpan={4} className="text-center py-6 text-slate-400">No signals</td></tr>
-              ) : signals.map((s: any) => (
-                <tr key={s.id} className="cursor-pointer" onClick={() => setExpandedSignalId(prev => prev === s.id ? null : s.id)}>
-                  <td><StatusBadge status={s.status} /></td>
-                  <td className="text-xs text-slate-500">{(s.telegram_channels as any)?.display_name ?? '—'}</td>
-                  <td className="max-w-xs text-xs text-slate-500">
-                    {expandedSignalId === s.id ? (
-                      <pre className="whitespace-pre-wrap break-words text-xs text-slate-700 dark:text-slate-300 font-sans max-w-lg">{s.raw_message ?? '—'}</pre>
-                    ) : (
-                      truncate(s.raw_message, 60)
-                    )}
-                  </td>
-                  <td className="text-xs text-slate-400">{formatDate(s.created_at)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <CardHeader>
+          <button
+            className="flex items-center justify-between w-full gap-2 group"
+            onClick={() => setShowReportedTrades(!showReportedTrades)}
+          >
+            <h3 className="text-sm font-semibold">Reported Trades ({reportedTrades.length})</h3>
+            <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showReportedTrades ? 'rotate-180' : ''}`} />
+          </button>
+        </CardHeader>
+        {showReportedTrades && (
+          <div className="overflow-x-auto">
+            <table className="table-base">
+              <thead><tr><th>Symbol</th><th>Direction</th><th>Reason</th><th>Status</th><th>Reported At</th></tr></thead>
+              <tbody>
+                {reportedTrades.length === 0 ? (
+                  <tr><td colSpan={5} className="text-center py-6 text-slate-400">No reported trades</td></tr>
+                ) : reportedTrades.map((r: TradeReportRow) => (
+                  <tr key={r.id}>
+                    <td className="font-medium">{r.symbol}</td>
+                    <td><StatusBadge status={r.direction} /></td>
+                    <td className="text-slate-500">{r.reason ?? '—'}</td>
+                    <td><StatusBadge status={r.status} /></td>
+                    <td className="text-xs text-slate-400">{formatDate(r.created_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </Card>
 
-      {/* Recent trades */}
-      <Card>
-        <CardHeader><h3 className="text-sm font-semibold">Recent Trades (last 20)</h3></CardHeader>
-        <div className="overflow-x-auto">
-          <table className="table-base">
-            <thead><tr><th>Symbol</th><th>Direction</th><th>Status</th><th>P&L</th><th>Opened</th></tr></thead>
-            <tbody>
-              {trades.length === 0 ? (
-                <tr><td colSpan={5} className="text-center py-6 text-slate-400">No trades</td></tr>
-              ) : trades.map((t: any) => (
-                <tr key={t.id}>
-                  <td className="font-medium">{t.symbol}</td>
-                  <td><StatusBadge status={t.direction} /></td>
-                  <td><StatusBadge status={t.status} /></td>
-                  <td className={t.profit != null ? (t.profit >= 0 ? 'text-success-600 dark:text-success-400 font-medium' : 'text-error-600 dark:text-error-400 font-medium') : ''}>
-                    {formatCurrency(t.profit)}
-                  </td>
-                  <td className="text-xs text-slate-400">{formatDate(t.opened_at)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
-
-      {/* Copier Logs */}
-      <Card>
-        <CardHeader><h3 className="text-sm font-semibold">Copier Logs (last 30)</h3></CardHeader>
-        <div className="overflow-x-auto">
-          <table className="table-base">
-            <thead><tr><th>Time</th><th>Action</th><th>Status</th><th>Skip Reason</th><th>Error</th><th>Signal ID</th></tr></thead>
-            <tbody>
-              {copierLogs.length === 0 ? (
-                <tr><td colSpan={6} className="text-center py-6 text-slate-400">No copier logs</td></tr>
-              ) : copierLogs.map((log: any) => {
-                const skipReason = log.status === 'skipped'
-                  ? (log.request_payload?.skip_reason || log.error_message || '—')
-                  : '—';
-                return (
-                <tr
-                  key={log.id}
-                  className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50"
-                  onClick={() => setExpandedLogId(prev => prev === log.id ? null : log.id)}
-                >
-                  <td className="text-xs text-slate-400 whitespace-nowrap">{formatRelative(log.created_at)}</td>
-                  <td><span className="badge bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-xs">{log.action}</span></td>
-                  <td><StatusBadge status={log.status} dot /></td>
-                  <td className="text-xs text-warning-600 dark:text-warning-400 max-w-[200px] truncate">{skipReason}</td>
-                  <td className="text-xs text-error-500 max-w-[200px] truncate">{log.error_message ?? '—'}</td>
-                  <td className="text-xs text-slate-400 font-mono">{log.signal_id ? truncate(log.signal_id, 8) : '—'}</td>
-                </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          {expandedLogId && (() => {
-            const log = copierLogs.find((l: any) => l.id === expandedLogId);
-            if (!log) return null;
-            return (
-              <div className="border-t border-slate-200 dark:border-slate-700 p-4 space-y-4 bg-slate-50 dark:bg-slate-800/50">
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
-                  <div>
-                    <p className="font-semibold text-slate-500 dark:text-slate-400 mb-0.5">Signal ID</p>
-                    <p className="text-slate-700 dark:text-slate-300 font-mono">{log.signal_id ?? '—'}</p>
-                  </div>
-                  <div>
-                    <p className="font-semibold text-slate-500 dark:text-slate-400 mb-0.5">Broker Account</p>
-                    <p className="text-slate-700 dark:text-slate-300 font-mono">{log.broker_account_id ? truncate(log.broker_account_id, 12) : '—'}</p>
-                  </div>
-                  <div>
-                    <p className="font-semibold text-slate-500 dark:text-slate-400 mb-0.5">Timestamp</p>
-                    <p className="text-slate-700 dark:text-slate-300">{formatDate(log.created_at)}</p>
-                  </div>
-                </div>
-                {log.error_message && (
-                  <div>
-                    <p className="text-xs font-semibold text-error-500 mb-1">Error Message</p>
-                    <pre className="text-xs text-error-500 whitespace-pre-wrap break-all bg-white dark:bg-slate-900 p-3 rounded-lg border border-error-200 dark:border-error-800">{log.error_message}</pre>
-                  </div>
-                )}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-2">Request Payload</p>
-                    <JsonViewer data={log.request_payload} collapsed={false} />
-                  </div>
-                  <div>
-                    <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-2">Response Payload</p>
-                    <JsonViewer data={log.response_payload} collapsed={false} />
-                  </div>
-                </div>
-              </div>
-            );
-          })()}
-        </div>
-      </Card>
+      {/* User activity tabs */}
+      <UserActivityTabs userId={profile.user_id} counts={counts} />
     </div>
   );
 }

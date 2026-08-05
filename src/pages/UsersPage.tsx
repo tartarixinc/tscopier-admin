@@ -114,6 +114,7 @@ export function UsersPage() {
   useEffect(() => {
     const q = searchParams.get('search') ?? '';
     if (q && q !== search) setSearch(q);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
   useEffect(() => { setPage(1); }, [search, subStatus]);
@@ -142,21 +143,21 @@ export function UsersPage() {
       if (cancelled) return;
       if (profileErr) { setError(profileErr.message); setLoading(false); return; }
 
-      const userIds = (profiles ?? []).map((p: any) => p.user_id);
+      const userIds = (profiles ?? []).map((p) => p.user_id);
 
       // Fetch subscriptions separately
-      let subs: Record<string, { plan: string | null; status: string | null }> = {};
+      const subs: Record<string, { plan: string | null; status: string | null }> = {};
       if (userIds.length > 0) {
         const { data: subRows } = await adminSupabase
           .from('subscriptions')
           .select('user_id, plan, status')
           .in('user_id', userIds);
-        (subRows ?? []).forEach((s: any) => {
+        (subRows ?? []).forEach((s) => {
           subs[s.user_id] = { plan: s.plan, status: s.status };
         });
       }
 
-      let mapped: UserRow[] = (profiles ?? []).map((r: any) => ({
+      let mapped: UserRow[] = (profiles ?? []).map((r) => ({
         user_id: r.user_id,
         display_name: r.display_name,
         country: r.country,

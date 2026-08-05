@@ -9,7 +9,7 @@ interface ExportButtonProps {
   label?: string;
 }
 
-function toCSV(rows: any[]): string {
+function toCSV(rows: Record<string, unknown>[]): string {
   if (rows.length === 0) return '';
   const headers = Object.keys(rows[0]);
   const lines = [

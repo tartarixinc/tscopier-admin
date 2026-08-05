@@ -41,14 +41,14 @@ export function SignalStatsPage() {
 
       // By status
       const statusMap: Record<string, number> = {};
-      (allStatuses ?? []).forEach((s: any) => {
+      (allStatuses ?? []).forEach((s) => {
         statusMap[s.status ?? 'unknown'] = (statusMap[s.status ?? 'unknown'] ?? 0) + 1;
       });
       setByStatus(Object.entries(statusMap).map(([status, count]) => ({ status, count })).sort((a, b) => b.count - a.count));
 
       // Daily
       const dailyMap: Record<string, number> = {};
-      (recentSignals ?? []).forEach((s: any) => {
+      (recentSignals ?? []).forEach((s) => {
         const date = s.created_at?.slice(0, 10);
         if (date) dailyMap[date] = (dailyMap[date] ?? 0) + 1;
       });
@@ -57,8 +57,8 @@ export function SignalStatsPage() {
 
       // By channel
       const chanMap: Record<string, number> = {};
-      (channelSignals ?? []).forEach((s: any) => {
-        const name = (s.telegram_channels as any)?.display_name ?? 'Unknown';
+      (channelSignals ?? []).forEach((s) => {
+        const name = (s.telegram_channels as { display_name: string | null }[] | null)?.[0]?.display_name ?? 'Unknown';
         chanMap[name] = (chanMap[name] ?? 0) + 1;
       });
       setByChannel(
@@ -99,7 +99,7 @@ export function SignalStatsPage() {
           <CardContent>
             <ResponsiveContainer width="100%" height={280}>
               <PieChart>
-                <Pie data={byStatus} dataKey="count" nameKey="status" cx="50%" cy="50%" outerRadius={100} label={(props: any) => `${props.status} ${((props.percent ?? 0) * 100).toFixed(0)}%`} labelLine={false}>
+                <Pie data={byStatus} dataKey="count" nameKey="status" cx="50%" cy="50%" outerRadius={100} label={(props: { status?: string; percent?: number }) => `${props.status ?? ''} ${((props.percent ?? 0) * 100).toFixed(0)}%`} labelLine={false}>
                   {byStatus.map((entry, i) => (
                     <Cell key={i} fill={STATUS_COLORS[entry.status] ?? CHART_PALETTE[i % CHART_PALETTE.length]} />
                   ))}

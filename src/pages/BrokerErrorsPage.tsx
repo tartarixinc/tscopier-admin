@@ -50,9 +50,9 @@ export function BrokerErrorsPage() {
       .then(async ({ data: rows, count, error }) => {
         if (cancelled) return;
         if (!error) {
-          const userIds = [...new Set((rows ?? []).map((r: any) => r.user_id).filter(Boolean))];
+          const userIds = [...new Set((rows ?? []).map((r) => r.user_id).filter(Boolean))];
           const displayNames = await fetchDisplayNames(userIds);
-          setData((rows ?? []).map((r: any) => ({ ...r, display_name: displayNames[r.user_id] ?? null })));
+          setData((rows ?? []).map((r) => ({ ...r, display_name: displayNames[r.user_id] ?? null })));
           setTotal(count ?? 0);
         }
         setLoading(false);

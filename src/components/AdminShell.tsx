@@ -9,6 +9,7 @@ import {
 import { ThemeToggle } from './ui/ThemeToggle';
 import { authSupabase } from '../lib/adminSupabase';
 import { shortId } from '../lib/formatters';
+import { adminEnvSessionKey, getAdminEnv, isEnvConfigured, setAdminEnv, ENVIRONMENTS, projectRefOf, type AdminEnv } from '../lib/environment';
 import clsx from 'clsx';
 
 interface NavItem {
@@ -115,7 +116,10 @@ export function AdminShell({ children }: AdminShellProps) {
   const location = useLocation();
   const [globalSearch, setGlobalSearch] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const adminName = sessionStorage.getItem('admin_display_name') ?? 'Admin';
+  const activeEnv = getAdminEnv();
+  const adminName = sessionStorage.getItem(adminEnvSessionKey('admin_display_name'))
+    ?? sessionStorage.getItem('admin_display_name')
+    ?? 'Admin';
 
   const [results, setResults] = useState<SearchResult[]>([]);
   const [showResults, setShowResults] = useState(false);
@@ -162,7 +166,7 @@ export function AdminShell({ children }: AdminShellProps) {
         .limit(5),
     ]);
 
-    (usersRes.data ?? []).forEach((u: any) => {
+    (usersRes.data ?? []).forEach((u) => {
       items.push({
         category: 'user',
         id: u.user_id,
@@ -172,7 +176,7 @@ export function AdminShell({ children }: AdminShellProps) {
       });
     });
 
-    (brokersRes.data ?? []).forEach((b: any) => {
+    (brokersRes.data ?? []).forEach((b) => {
       items.push({
         category: 'broker',
         id: b.id,
@@ -182,7 +186,7 @@ export function AdminShell({ children }: AdminShellProps) {
       });
     });
 
-    (channelsRes.data ?? []).forEach((c: any) => {
+    (channelsRes.data ?? []).forEach((c) => {
       items.push({
         category: 'channel',
         id: c.id,
@@ -192,7 +196,7 @@ export function AdminShell({ children }: AdminShellProps) {
       });
     });
 
-    (tradesRes.data ?? []).forEach((tr: any) => {
+    (tradesRes.data ?? []).forEach((tr) => {
       items.push({
         category: 'trade',
         id: tr.id,
@@ -269,14 +273,45 @@ export function AdminShell({ children }: AdminShellProps) {
 
   async function handleLogout() {
     await authSupabase.auth.signOut();
+    sessionStorage.removeItem(adminEnvSessionKey('admin_authed'));
+    sessionStorage.removeItem(adminEnvSessionKey('admin_user_id'));
+    sessionStorage.removeItem(adminEnvSessionKey('admin_display_name'));
     sessionStorage.removeItem('admin_authed');
     sessionStorage.removeItem('admin_user_id');
     sessionStorage.removeItem('admin_display_name');
     navigate('/login');
   }
 
+  const envToggle = isEnvConfigured('staging') ? (
+    <div className="flex items-center rounded-lg bg-slate-100 dark:bg-slate-700/60 p-0.5 text-xs font-semibold shrink-0">
+      {(['prod', 'staging'] as AdminEnv[]).map(envKey => (
+        <button
+          key={envKey}
+          type="button"
+          onClick={() => envKey !== activeEnv && setAdminEnv(envKey)}
+          className={clsx(
+            'px-2.5 py-1 rounded-md transition-colors',
+            envKey === activeEnv
+              ? 'bg-white dark:bg-slate-600 text-slate-900 dark:text-white shadow-sm'
+              : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200',
+            envKey === 'staging' && envKey === activeEnv && 'bg-amber-500 text-white dark:bg-amber-500 shadow-none',
+          )}
+        >
+          {ENVIRONMENTS[envKey].shortLabel}
+        </button>
+      ))}
+    </div>
+  ) : null;
+
   return (
-    <div className="flex h-screen overflow-hidden bg-slate-50 dark:bg-slate-900">
+    <div className="flex h-screen overflow-hidden bg-slate-50 dark:bg-slate-900 flex-col">
+      {activeEnv === 'staging' && (
+        <div className="shrink-0 bg-amber-500 text-white text-xs font-semibold text-center px-4 py-1.5 tracking-wide">
+          STAGING ENVIRONMENT ({projectRefOf('staging')}) — data shown is from the staging Supabase project
+        </div>
+      )}
+
+      <div className="flex flex-1 overflow-hidden min-h-0">
       {/* Mobile overlay */}
       {sidebarOpen && (
         <div
@@ -442,12 +477,14 @@ export function AdminShell({ children }: AdminShellProps) {
               </div>
             )}
           </form>
+          {envToggle}
         </header>
 
         {/* Page content */}
         <main className="flex-1 overflow-y-auto p-4 lg:p-6 animate-fade-in">
           {children}
         </main>
+      </div>
       </div>
     </div>
   );

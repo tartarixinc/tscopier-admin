@@ -78,7 +78,7 @@ async function fetchOpenInvoice(
   };
 }
 
-function formatAmount(cents: number, currency: string): string {
+function formatAmount(cents: number, _currency: string): string {
   return (cents / 100).toFixed(2);
 }
 

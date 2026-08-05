@@ -48,14 +48,14 @@ export function AffiliatesPage() {
 
       const allUserIds = [
         ...new Set([
-          ...(affRows ?? []).map((r: any) => r.user_id),
-          ...(commRows ?? []).map((r: any) => r.affiliate_user_id),
+          ...(affRows ?? []).map((r) => r.user_id),
+          ...(commRows ?? []).map((r) => r.affiliate_user_id),
         ].filter(Boolean)),
       ];
       const displayNames = await fetchDisplayNames(allUserIds);
 
-      setAffiliates((affRows ?? []).map((r: any) => ({ ...r, display_name: displayNames[r.user_id] ?? null })));
-      setCommissions((commRows ?? []).map((r: any) => ({ ...r, affiliate_display_name: displayNames[r.affiliate_user_id] ?? null })));
+      setAffiliates((affRows ?? []).map((r) => ({ ...r, display_name: displayNames[r.user_id] ?? null })));
+      setCommissions((commRows ?? []).map((r) => ({ ...r, affiliate_display_name: displayNames[r.affiliate_user_id] ?? null })));
       setLoading(false);
     })();
   }, []);

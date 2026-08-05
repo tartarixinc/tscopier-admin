@@ -115,7 +115,7 @@ export function DataTable<T>({
                   >
                     {columns.map(col => (
                       <td key={col.key} className={col.className}>
-                        {col.render ? col.render(row) : (() => { const v = (row as any)[col.key]; return v == null ? '—' : typeof v === 'object' ? JSON.stringify(v) : v; })()}
+                        {col.render ? col.render(row) : (() => { const v = (row as Record<string, unknown>)[col.key]; return v == null ? '—' : typeof v === 'object' ? JSON.stringify(v) : String(v); })()}
                       </td>
                     ))}
                   </tr>

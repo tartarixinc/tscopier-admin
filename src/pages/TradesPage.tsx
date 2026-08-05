@@ -5,17 +5,22 @@ import { DataTable, Pagination } from '../components/DataTable';
 import { StatusBadge } from '../components/StatusBadge';
 import { UserLink } from '../components/UserLink';
 import { ExportButton } from '../components/ExportButton';
+import { TradePipelineModal } from '../components/TradePipelineModal';
 import { Input } from '../components/ui/Input';
 import { Select } from '../components/ui/Select';
 import { Card } from '../components/ui/Card';
-import { Search } from 'lucide-react';
+import { Search, Activity, ChevronDown, ChevronRight } from 'lucide-react';
 import type { Column } from '../components/DataTable';
+import { classifyTradeExecutionType, type TradeExecutionEvidenceLog, type TradeExecutionType } from '../lib/tradeExecutionType';
 
 interface TradeRow {
   id: string;
   user_id: string;
   user_display_name: string | null;
+  broker_account_id: string | null;
   broker_label: string | null;
+  metaapi_order_id: string | null;
+  signal_id: string | null;
   symbol: string;
   direction: string;
   entry_price: number | null;
@@ -40,6 +45,9 @@ interface TradeRow {
   auto_be_type: string | null;
   auto_be_offset_pips: number | null;
   auto_be_applied_at: string | null;
+  telegram_channel_id: string | null;
+  channel_display_name: string | null;
+  execution_type: TradeExecutionType;
 }
 
 const PAGE_SIZE = 50;
@@ -62,6 +70,7 @@ export function TradesPage({ fixedStatus, title = 'Trades', subtitle }: TradesPa
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [pipelineTrade, setPipelineTrade] = useState<TradeRow | null>(null);
 
   useEffect(() => { setPage(1); }, [status, direction, symbol, userId, dateFrom, dateTo]);
 
@@ -76,7 +85,7 @@ export function TradesPage({ fixedStatus, title = 'Trades', subtitle }: TradesPa
       let q = adminSupabase
         .from('trades')
         .select(
-          'id, user_id, broker_account_id, symbol, direction, entry_price, sl, tp, lot_size, status, profit, opened_at, closed_at, tp_levels, tp_open, next_tp_index, trail_peak_price, trail_last_sl, trail_start_pips, trail_step_pips, trail_distance_pips, auto_be_mode, auto_be_trigger_value, auto_be_tp_index, auto_be_type, auto_be_offset_pips, auto_be_applied_at',
+          'id, user_id, broker_account_id, metaapi_order_id, signal_id, telegram_channel_id, symbol, direction, entry_price, sl, tp, lot_size, status, profit, opened_at, closed_at, tp_levels, tp_open, next_tp_index, trail_peak_price, trail_last_sl, trail_start_pips, trail_step_pips, trail_distance_pips, auto_be_mode, auto_be_trigger_value, auto_be_tp_index, auto_be_type, auto_be_offset_pips, auto_be_applied_at',
           { count: 'exact' }
         )
         .order('opened_at', { ascending: false, nullsFirst: false })
@@ -93,27 +102,45 @@ export function TradesPage({ fixedStatus, title = 'Trades', subtitle }: TradesPa
       if (cancelled) return;
       if (error) { setLoading(false); return; }
 
-      const userIds = [...new Set((rows ?? []).map((r: any) => r.user_id).filter(Boolean))];
-      const brokerIds = [...new Set((rows ?? []).map((r: any) => r.broker_account_id).filter(Boolean))];
+      const userIds = [...new Set((rows ?? []).map((r) => r.user_id).filter(Boolean))];
+      const brokerIds = [...new Set((rows ?? []).map((r) => r.broker_account_id).filter(Boolean))];
+      const channelIds = [...new Set((rows ?? []).map((r) => r.telegram_channel_id).filter((id): id is string => Boolean(id)))];
+      const signalIds = [...new Set((rows ?? []).map((r) => r.signal_id).filter((id): id is string => Boolean(id)))];
 
-      const [displayNames, brokerLabels] = await Promise.all([
+      const [displayNames, brokerLabels, channelRows, logRows] = await Promise.all([
         fetchDisplayNames(userIds),
         brokerIds.length > 0
           ? adminSupabase.from('broker_accounts').select('id, label').in('id', brokerIds)
               .then(({ data }) => {
                 const m: Record<string, string> = {};
-                (data ?? []).forEach((b: any) => { m[b.id] = b.label; });
+                (data ?? []).forEach((b) => { m[b.id] = b.label; });
                 return m;
               })
           : Promise.resolve({} as Record<string, string>),
+        channelIds.length > 0 ? adminSupabase.from('telegram_channels').select('id, display_name, channel_username').in('id', channelIds) : Promise.resolve({ data: [] }),
+        signalIds.length > 0 ? adminSupabase.from('trade_execution_logs').select('signal_id, action, status, request_payload, response_payload').in('signal_id', signalIds).order('created_at', { ascending: false }).limit(2000) : Promise.resolve({ data: [] }),
       ]);
 
       if (cancelled) return;
-      setData((rows ?? []).map((r: any) => ({
-        ...r,
-        user_display_name: displayNames[r.user_id] ?? null,
-        broker_label: brokerLabels[r.broker_account_id] ?? null,
-      })));
+      const channelNames: Record<string, string> = {};
+      (channelRows.data ?? []).forEach((channel) => { channelNames[channel.id] = channel.display_name ?? channel.channel_username ?? 'Unnamed channel'; });
+      const logs = (logRows.data ?? []) as (TradeExecutionEvidenceLog & { signal_id?: string })[];
+      const linkedCounts = new Map<string, number>();
+      (rows ?? []).forEach((r) => {
+        const key = `${r.signal_id ?? 'none'}:${r.broker_account_id ?? 'none'}`;
+        linkedCounts.set(key, (linkedCounts.get(key) ?? 0) + 1);
+      });
+      setData((rows ?? []).map((r) => {
+        const key = `${r.signal_id ?? 'none'}:${r.broker_account_id ?? 'none'}`;
+        const rowLogs = logs.filter(log => log.signal_id === r.signal_id);
+        return {
+          ...r,
+          user_display_name: displayNames[r.user_id] ?? null,
+          broker_label: brokerLabels[r.broker_account_id] ?? null,
+          channel_display_name: channelNames[r.telegram_channel_id] ?? null,
+          execution_type: classifyTradeExecutionType({ logs: rowLogs, ticket: r.metaapi_order_id, linkedTradeCount: linkedCounts.get(key) ?? 1 }),
+        };
+      }));
       setTotal(count ?? 0);
       setLoading(false);
     })();
@@ -126,6 +153,8 @@ export function TradesPage({ fixedStatus, title = 'Trades', subtitle }: TradesPa
     { key: 'broker_label', label: 'Broker', render: r => <span className="text-xs text-slate-500">{r.broker_label ?? '—'}</span> },
     { key: 'symbol', label: 'Symbol', render: r => <span className="font-bold text-sm">{r.symbol}</span> },
     { key: 'direction', label: 'Dir', render: r => <StatusBadge status={r.direction} /> },
+    { key: 'execution_type', label: 'Type', render: r => <span className="rounded-full bg-primary-50 dark:bg-primary-900/30 px-2 py-0.5 text-[10px] font-semibold text-primary-700 dark:text-primary-300 whitespace-nowrap">{r.execution_type}</span> },
+    { key: 'channel_display_name', label: 'Channel', render: r => <span className="text-xs text-slate-500 max-w-[150px] block truncate" title={r.channel_display_name ?? undefined}>{r.channel_display_name ?? '—'}</span> },
     { key: 'entry_price', label: 'Entry', render: r => <span className="font-mono text-xs">{r.entry_price ?? '—'}</span> },
     { key: 'sl', label: 'SL', render: r => <span className="font-mono text-xs text-error-500">{r.sl ?? '—'}</span> },
     { key: 'lot_size', label: 'Lots', sortable: true, render: r => formatLots(r.lot_size) },
@@ -140,6 +169,31 @@ export function TradesPage({ fixedStatus, title = 'Trades', subtitle }: TradesPa
     },
     { key: 'opened_at', label: 'Opened', sortable: true, render: r => <span className="text-xs text-slate-400">{formatDate(r.opened_at)}</span> },
     { key: 'closed_at', label: 'Closed', render: r => <span className="text-xs text-slate-400">{r.closed_at ? formatDate(r.closed_at) : '—'}</span> },
+    {
+      key: 'actions',
+      label: '',
+      className: 'text-right',
+      render: r => (
+        <div className="flex items-center justify-end gap-1">
+          <button
+            type="button"
+            title="Open trade pipeline"
+            onClick={e => { e.stopPropagation(); setPipelineTrade(r); }}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-900/30 transition-colors"
+          >
+            <Activity className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            title="Toggle trade details"
+            onClick={e => { e.stopPropagation(); setExpandedId(prev => prev === r.id ? null : r.id); }}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+          >
+            {expandedId === r.id ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+          </button>
+        </div>
+      ),
+    },
   ];
 
   return (
@@ -173,7 +227,7 @@ export function TradesPage({ fixedStatus, title = 'Trades', subtitle }: TradesPa
           data={data}
           loading={loading}
           rowKey={r => r.id}
-          onRowClick={r => setExpandedId(prev => prev === r.id ? null : r.id)}
+          onRowClick={r => setPipelineTrade(r)}
           expandedRowKey={expandedId}
           expandedContent={r => (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -234,6 +288,13 @@ export function TradesPage({ fixedStatus, title = 'Trades', subtitle }: TradesPa
         />
         <Pagination page={page} totalPages={Math.max(1, Math.ceil(total / PAGE_SIZE))} totalCount={total} pageSize={PAGE_SIZE} onPageChange={setPage} />
       </Card>
+
+      {pipelineTrade && (
+        <TradePipelineModal
+          trade={pipelineTrade}
+          onClose={() => setPipelineTrade(null)}
+        />
+      )}
     </div>
   );
 }
