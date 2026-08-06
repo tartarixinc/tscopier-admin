@@ -1,8 +1,9 @@
-import { useState } from 'react';
-import { X, Sparkles, CheckCircle2, AlertTriangle, XCircle, HelpCircle } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { X, Sparkles, CheckCircle2, AlertTriangle, XCircle, HelpCircle, GitBranch } from 'lucide-react';
 import { authSupabase as adminSupabase } from '../lib/adminSupabase';
 import { formatDate } from '../lib/formatters';
 import { interpretCopierLog, type LogVerdict } from '../lib/copierLogInterpreter';
+import { ModelDecisionChainSection } from './pipeline/PipelineSections';
 import { JsonViewer } from './JsonViewer';
 import { StatusBadge } from './StatusBadge';
 import clsx from 'clsx';
@@ -59,8 +60,46 @@ function FieldGrid({ title, fields }: { title: string; fields: { key: string; la
 export function CopierLogDetailModal({ log, onClose }: CopierLogDetailModalProps) {
   const interpretation = interpretCopierLog(log);
   const [ai, setAi] = useState<{ status: 'idle' | 'loading' | 'done' | 'error'; data?: AiLogResult; message?: string }>({ status: 'idle' });
+  const [signalChain, setSignalChain] = useState<{
+    signal: { parsed_data: unknown; skip_reason: string | null; status: string | null; pipeline_ts?: unknown };
+    events: { id: string; event_type: string; detail: unknown; created_at: string | null }[];
+  } | null>(null);
   const style = VERDICT_STYLE[interpretation.verdict];
   const VerdictIcon = style.icon;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!log.signal_id) return;
+    (async () => {
+      const [{ data: sigData }, eventsResult] = await Promise.all([
+        adminSupabase
+          .from('signals')
+          .select('parsed_data, skip_reason, status, pipeline_ts, telegram_message_id')
+          .eq('id', log.signal_id)
+          .maybeSingle(),
+        (async () => {
+          const { data: msgRow } = await adminSupabase
+            .from('signals')
+            .select('telegram_message_id')
+            .eq('id', log.signal_id)
+            .maybeSingle();
+          if (!msgRow?.telegram_message_id) return { data: [] };
+          return adminSupabase
+            .from('listener_events')
+            .select('id, event_type, detail, created_at')
+            .eq('telegram_message_id', msgRow.telegram_message_id)
+            .order('created_at', { ascending: true })
+            .limit(50);
+        })(),
+      ]);
+      if (cancelled || !sigData) return;
+      setSignalChain({
+        signal: sigData as { parsed_data: unknown; skip_reason: string | null; status: string | null; pipeline_ts?: unknown },
+        events: (eventsResult?.data ?? []) as { id: string; event_type: string; detail: unknown; created_at: string | null }[],
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [log.signal_id]);
 
   async function explainWithAi() {
     const cached = logAiCache.get(log.id);
@@ -130,6 +169,16 @@ export function CopierLogDetailModal({ log, onClose }: CopierLogDetailModalProps
               </p>
             )}
           </div>
+
+          {signalChain && (
+            <section>
+              <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3 flex items-center gap-1.5">
+                <GitBranch className="w-4 h-4 text-primary-500" />
+                Source signal model chain
+              </h3>
+              <ModelDecisionChainSection signal={signalChain.signal} listenerEvents={signalChain.events} />
+            </section>
+          )}
 
           <section>
             <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3 flex items-center gap-1.5">
