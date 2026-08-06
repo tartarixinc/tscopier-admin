@@ -612,6 +612,14 @@ export function ModelDecisionChainSection({ signal, listenerEvents }: {
   const stage1Ms = chain.deterministic?.duration_ms
     ?? (chain.final.path === 'fast_lane' ? parseMs : null);
 
+  const fallbackEvt = lastAiEvent(listenerEvents, 'ai_parse_fallback');
+  const fallbackEvtReason = fallbackEvt && typeof fallbackEvt.detail === 'object' && fallbackEvt.detail !== null
+    ? (fallbackEvt.detail as { reason?: unknown }).reason
+    : null;
+  const stage2FallbackNote = chain.stage2?.source === 'openai'
+    ? `Skipped stage 2 — Cerebras unavailable, fell back to OpenAI${fallbackEvtReason != null ? `: ${String(fallbackEvtReason)}` : ''}`
+    : null;
+
   const finalPathLabel = FINAL_PATH_LABELS[chain.final.path] ?? `Path: ${chain.final.path}`;
   const finalBadge = sourceBadge(chain.final.source);
 
@@ -638,7 +646,7 @@ export function ModelDecisionChainSection({ signal, listenerEvents }: {
         step="2"
         title="OSS context interpretation"
         stage={chain.stage2}
-        note={!chain.stage2 ? 'Not reached (fast lane / AI disabled).' : null}
+        note={stage2FallbackNote ?? (!chain.stage2 ? 'Not reached (fast lane / AI disabled).' : null)}
       />
       <ChainRow
         step="3"
