@@ -546,6 +546,10 @@ function chainFromLegacy(signal: { parsed_data: unknown; skip_reason: string | n
     const b = pts[start];
     return typeof a === 'number' && typeof b === 'number' ? Math.max(0, a - b) : null;
   };
+  // For fast-lane signals the entire parse WAS the deterministic stage — the
+  // parse timestamps are an exact stand-in for the pre-timing-stamps era.
+  const parseMs = p('parse_completed_at', 'parse_started_at');
+  const stage1Ms = p('t_stage1_done_at', 't_stage1_started_at') ?? (finalPath === 'fast_lane' ? parseMs : null);
 
   return {
     deterministic: {
@@ -555,7 +559,7 @@ function chainFromLegacy(signal: { parsed_data: unknown; skip_reason: string | n
       confidence: hasConf ? confidence : null,
       status: detStatus,
       skip_reason: null,
-      duration_ms: p('t_stage1_done_at', 't_stage1_started_at'),
+      duration_ms: stage1Ms,
     },
     stage2: stage2Source
       ? {
@@ -599,6 +603,14 @@ export function ModelDecisionChainSection({ signal, listenerEvents }: {
   const pipelineTs = (signal.pipeline_ts ?? {}) as Record<string, number | undefined>;
   const ingestedAt = pipelineTs.t_listener_received ?? pipelineTs.t_parse_started ?? null;
   const ingestedLabel = ingestedAt != null ? new Date(ingestedAt).toISOString().slice(11, 23) + 'Z' : null;
+  const parseStart = pipelineTs.parse_started_at ?? pipelineTs.t_parse_started ?? null;
+  const parseDone = pipelineTs.parse_completed_at ?? pipelineTs.t_parse_done ?? null;
+  const parseMs = typeof parseStart === 'number' && typeof parseDone === 'number'
+    ? Math.max(0, parseDone - parseStart)
+    : null;
+  const hasStageStamps = pipelineTs.t_stage1_started_at != null || chain.deterministic?.duration_ms != null;
+  const stage1Ms = chain.deterministic?.duration_ms
+    ?? (chain.final.path === 'fast_lane' ? parseMs : null);
 
   const finalPathLabel = FINAL_PATH_LABELS[chain.final.path] ?? `Path: ${chain.final.path}`;
   const finalBadge = sourceBadge(chain.final.source);
@@ -619,7 +631,7 @@ export function ModelDecisionChainSection({ signal, listenerEvents }: {
       <ChainRow
         step="1"
         title="Deterministic regex engine"
-        stage={chain.deterministic}
+        stage={chain.deterministic ? { ...chain.deterministic, duration_ms: stage1Ms } : null}
         note={chain.final.path === 'fast_lane' ? 'Fast lane — this stage decided alone, no AI ran.' : null}
       />
       <ChainRow
@@ -652,6 +664,12 @@ export function ModelDecisionChainSection({ signal, listenerEvents }: {
         </div>
         {chain.final.skip_reason && (
           <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400 break-words">{chain.final.skip_reason}</p>
+        )}
+        {parseMs != null && !hasStageStamps && (
+          <p className="mt-1 text-[11px] text-slate-400">
+            Parse latency: {parseMs < 1000 ? `${parseMs} ms` : `${(parseMs / 1000).toFixed(2)} s`} total
+            (deterministic + AI) — per-stage stamps start with newer signals.
+          </p>
         )}
       </div>
     </section>
