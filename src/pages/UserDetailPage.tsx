@@ -226,14 +226,15 @@ export function UserDetailPage() {
       const tgSession = tgSessionRaw as TgSessionRow | null;
       const tgClaim = tgClaimRaw as TgClaimRow | null;
       const lease = leaseRaw as LeaseRow | null;
-      setTelegram(tgSession || tgClaim || lease ? {
+      const liveLease = isLeaseLive(lease);
+      setTelegram(tgSession || tgClaim || liveLease ? {
         phone_number: tgSession?.phone_number ?? null,
         is_active: tgSession?.is_active ?? false,
         listener_engine: tgSession?.listener_engine ?? null,
         created_at: tgSession?.created_at ?? tgClaim?.linked_at ?? '',
         telegram_user_id: tgClaim?.telegram_user_id?.toString() ?? null,
         linked_at: tgClaim?.linked_at ?? null,
-        is_online: isLeaseLive(lease) || Boolean(tgSession?.is_active),
+        is_online: liveLease || Boolean(tgSession?.is_active),
         worker_id: lease?.worker_id ?? null,
         lease_expires_at: lease?.expires_at ?? null,
       } : null);
