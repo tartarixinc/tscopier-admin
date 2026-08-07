@@ -21,3 +21,7 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+# build artifacts
+*.tsbuildinfo
+supabase/.temp/

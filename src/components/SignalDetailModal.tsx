@@ -9,6 +9,8 @@ import {
   LatencyGanttSection,
   LatencyBreakdownSection,
   AiExplainSection,
+  AiVerificationSection,
+  ModelDecisionChainSection,
   ExecutionAttemptsSection,
   SummaryCell,
 } from './pipeline/PipelineSections';
@@ -66,6 +68,13 @@ interface LinkedTradeFetchRow {
   opened_at: string | null;
 }
 
+interface ListenerEventRow {
+  id: string;
+  event_type: string;
+  detail: unknown;
+  created_at: string | null;
+}
+
 function SkipBanner({ skipReason }: { skipReason: string | null }) {
   if (!skipReason) return null;
   return (
@@ -93,6 +102,7 @@ export function SignalDetailModal({ signalId, onClose }: SignalDetailModalProps)
   const [signal, setSignal] = useState<SignalRow | null>(null);
   const [channelSignal, setChannelSignal] = useState<ChannelSignalRow | null>(null);
   const [executionLogs, setExecutionLogs] = useState<ExecutionLogRow[]>([]);
+  const [listenerEvents, setListenerEvents] = useState<ListenerEventRow[]>([]);
   const [trade, setTrade] = useState<LinkedTrade | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -129,6 +139,16 @@ export function SignalDetailModal({ signalId, onClose }: SignalDetailModalProps)
       }
       setSignal(sig);
       setExecutionLogs((logData ?? []) as ExecutionLogRow[]);
+
+      if (sig.telegram_message_id) {
+        const { data: eventData } = await adminSupabase
+          .from('listener_events')
+          .select('id, event_type, detail, created_at')
+          .eq('telegram_message_id', sig.telegram_message_id)
+          .order('created_at', { ascending: true })
+          .limit(50);
+        if (!cancelled) setListenerEvents((eventData ?? []) as ListenerEventRow[]);
+      }
 
       let brokerLabel: string | null = null;
       if (tradeData) {
@@ -257,6 +277,9 @@ export function SignalDetailModal({ signalId, onClose }: SignalDetailModalProps)
                 <SummaryCell label="Signal ID" value={signalId.slice(0, 8)} mono />
                 <SummaryCell label="Created" value={signal?.created_at ? formatDate(signal.created_at) : '—'} />
               </div>
+
+              <ModelDecisionChainSection signal={signal} listenerEvents={listenerEvents} />
+              <AiVerificationSection signal={signal} listenerEvents={listenerEvents} />
 
               {(mainSkipReason || channelSkipReason) && (
                 <SkipBanner skipReason={channelSkipReason ?? mainSkipReason} />

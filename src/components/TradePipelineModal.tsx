@@ -9,6 +9,8 @@ import {
   LatencyGanttSection,
   LatencyBreakdownSection,
   AiExplainSection,
+  AiVerificationSection,
+  ModelDecisionChainSection,
   ExecutionAttemptsSection,
   SummaryCell,
 } from './pipeline/PipelineSections';
@@ -433,6 +435,10 @@ export function TradePipelineModal({ trade, onClose }: TradePipelineModalProps) 
                 listenerEvents={listenerEvents}
                 executionLogs={executionLogs}
               />
+
+              <AiVerificationSection signal={signal} listenerEvents={listenerEvents} />
+
+              <ModelDecisionChainSection signal={signal} listenerEvents={listenerEvents} />
 
               <section>
                 <h3 className="flex items-center gap-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">

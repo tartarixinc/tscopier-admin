@@ -119,6 +119,17 @@ function snippet(value: unknown, max: number): string {
   }
 }
 
+/** Serialize to JSON without length limits (payloads are structured and small). */
+function full(value: unknown): string {
+  if (value == null) return "(none)"
+  if (typeof value === "string") return value
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
+
 async function explainSignal(
   supabase: ReturnType<typeof createClient>,
   signalId: string,
@@ -126,7 +137,7 @@ async function explainSignal(
   focusedBrokerAccountId: string | null,
 ): Promise<Response> {
   const [{ data: signal }, { data: trades }, { data: logs }, { data: logStatuses }] = await Promise.all([
-    supabase.from("signals").select("raw_message, parsed_data, status, skip_reason, pipeline_ts, channel_signal_id, channel_id, telegram_message_id, created_at, telegram_channels(display_name, signal_channel_id)").eq("id", signalId).maybeSingle(),
+    supabase.from("signals").select("id, user_id, raw_message, parsed_data, status, skip_reason, pipeline_ts, channel_signal_id, channel_id, telegram_message_id, parent_signal_id, is_modification, created_at, telegram_channels(display_name, signal_channel_id)").eq("id", signalId).maybeSingle(),
     supabase.from("trades").select("id, broker_account_id, metaapi_order_id, symbol, direction, status, entry_price, sl, tp, lot_size, profit, opened_at, closed_at").eq("signal_id", signalId),
     // Newest first — old failures (e.g. "Not enough money" before funding) must not
     // overshadow later successes; the model needs the outcome timeline, not just the first attempts.
@@ -163,8 +174,10 @@ async function explainSignal(
 
   let channelSkipReason: string | null = null
   let channelName: string | null = null
+  let channelSignal: { raw_message?: string | null; parsed_data?: unknown; skip_reason?: string | null; status?: string | null } | null = null
   if (signal.channel_signal_id) {
-    const { data: cs } = await supabase.from("channel_signals").select("skip_reason, status").eq("id", signal.channel_signal_id).maybeSingle()
+    const { data: cs } = await supabase.from("channel_signals").select("raw_message, parsed_data, skip_reason, status").eq("id", signal.channel_signal_id).maybeSingle()
+    channelSignal = cs
     channelSkipReason = cs?.skip_reason ?? null
   } else {
     // signals.channel_id is a telegram_channels FK — NOT channel_signals.signal_channel_id.
@@ -172,9 +185,56 @@ async function explainSignal(
     const channelRow = (signal.telegram_channels as { display_name?: string | null; signal_channel_id?: string | null }[] | null)?.[0] ?? null
     channelName = channelRow?.display_name ?? null
     if (channelRow?.signal_channel_id && signal.telegram_message_id) {
-      const { data: cs } = await supabase.from("channel_signals").select("skip_reason, status").eq("signal_channel_id", channelRow.signal_channel_id).eq("telegram_message_id", signal.telegram_message_id).maybeSingle()
+      const { data: cs } = await supabase.from("channel_signals").select("raw_message, parsed_data, skip_reason, status").eq("signal_channel_id", channelRow.signal_channel_id).eq("telegram_message_id", signal.telegram_message_id).maybeSingle()
+      channelSignal = cs
       channelSkipReason = cs?.skip_reason ?? null
     }
+  }
+
+  // Listener events: AI parse source, review-required, fallback, shadow diffs, revisions.
+  let listenerEvents: unknown[] = []
+  if (signal.telegram_message_id) {
+    const { data: evts } = await supabase
+      .from("listener_events")
+      .select("event_type, detail, created_at")
+      .eq("telegram_message_id", signal.telegram_message_id)
+      .order("created_at", { ascending: true })
+      .limit(100)
+    listenerEvents = evts ?? []
+  }
+
+  // Dispatch claims for the focused broker account.
+  let dispatchClaims: unknown[] = []
+  if (focusedBrokerAccountId) {
+    const { data: claims } = await supabase
+      .from("signal_broker_dispatch_claims")
+      .select("id, broker_account_id, created_at, released_at, status")
+      .eq("signal_id", signalId)
+      .eq("broker_account_id", focusedBrokerAccountId)
+      .limit(10)
+    dispatchClaims = claims ?? []
+  }
+
+  // Broker account details for the focused trade.
+  let brokerAccount: unknown = null
+  if (focusedBrokerAccountId) {
+    const { data: broker } = await supabase
+      .from("broker_accounts")
+      .select("id, label, broker_name, platform, copier_mode, trade_style")
+      .eq("id", focusedBrokerAccountId)
+      .maybeSingle()
+    brokerAccount = broker
+  }
+
+  // Parent signal (Telegram reply target) raw message + parsed.
+  let parentSignal: unknown = null
+  if (signal.parent_signal_id) {
+    const { data: parent } = await supabase
+      .from("signals")
+      .select("raw_message, parsed_data, status, skip_reason, created_at")
+      .eq("id", signal.parent_signal_id)
+      .maybeSingle()
+    parentSignal = parent
   }
 
   // Aggregate the FULL attempt history (statuses-only query, no limits).
@@ -193,49 +253,69 @@ async function explainSignal(
     .map(([k, v]) => `${STAGE_LABELS[k]}: ${v} ms`)
     .join(", ")
 
+  const parsedData = (signal.parsed_data ?? {}) as Record<string, unknown>
+  const verification = parsedData._verification ?? null
+  const storedIntent = parsedData._intent ?? null
+
   const systemPrompt = [
     "You are the analyst for TScopier, a Telegram trade-signal copier.",
-    "Explain what happened with the selected trade in plain English for an administrator who needs to decide whether broker execution was safe.",
+    "You receive the COMPLETE record for a signal and one of its trades. Explain what happened in plain English for an administrator.",
     "Rules:",
-    "- Start with the direct answer in 2-4 short sentences. State whether the selected trade had a broker-confirmed initial stop loss and take profit.",
-    "- Treat a request value of stoploss=0 or takeprofit=0 as NOT SENT. A value stored on the trade row is not proof that the broker received it.",
+    "- summary: the direct answer in 2-4 short sentences — did the selected trade execute, was protection (SL/TP) broker-confirmed, and was anything anomalous.",
+    "- details: an exhaustive point-by-point breakdown. Cover each of the following when data is present:",
+    "  1. Model decision chain — deterministic regex, OSS (Cerebras/OpenAI), GPT-4o reconciliation, final outcome and per-stage durations.",
+    "  2. Parse path — who parsed the message, confidence, validation failures, skip reasons.",
+    "  3. Execution attempts — every attempt in chronological order with its outcome and error.",
+    "  4. Broker protection — for the selected trade, was the initial stop loss and take profit actually SENT to the broker. Treat stoploss=0 or takeprofit=0 as NOT SENT. A value on the trade row is not proof the broker received it.",
+    "  5. Ticket mismatches — management actions pointing at a different ticket than the selected trade.",
+    "  6. Pipeline timing — the largest stages and total journey, with numbers.",
+    "  7. Review / human escalation state if the signal was skipped for review.",
     "- Match management actions to the selected broker ticket. Do not use an action for another ticket to explain this trade.",
-    "- If a management action points to another ticket, call out the ticket mismatch clearly and say that protection for the selected trade cannot be confirmed from these records.",
     "- Explain Invalid stops as: the broker rejected that stop update. Do not invent the exact distance or price reason unless the payload contains it.",
     "- If virtual pending or range basket actions are present, identify the trade as a range trade or range basket when supported by the evidence. Do not call it layered without layer evidence.",
-    "- You are given the FULL attempt history as counts plus the newest attempts (newest first).",
-    "- If early attempts failed but later ones succeeded (e.g. 'Not enough money' then success after funding), SAY SO — describe the outcome timeline, do not conclude the signal failed overall.",
-    "- If the signal was SKIPPED, lead with the skip reason and explain in plain terms why the trade was not taken.",
+    "- If early attempts failed but later ones succeeded, describe the outcome timeline — do not conclude the signal failed overall.",
+    "- If the signal was SKIPPED, lead with the skip reason and explain why the trade was not taken.",
     "- If ALL attempts failed, explain exactly which stage failed, the error, and its likely cause.",
-    "- Mention timing only after explaining execution and protection. Avoid words such as pipeline, dispatch, claim, persistence, or reconciliation unless you immediately explain them.",
     "- If timestamps are missing or a stage is absent, say what cannot be determined.",
-    "- Be factual and concise. Use short sentences and ordinary words.",
-    "Reply with strict JSON: {\"summary\": string, \"anomalies\": string[], \"overall\": \"fast\"|\"normal\"|\"slow\"}.",
+    "- Use short sentences and ordinary words. Avoid pipeline jargon (dispatch, claim, persistence, reconciliation) unless you immediately explain it.",
+    "Reply with strict JSON: {\"summary\": string, \"anomalies\": string[], \"overall\": \"fast\"|\"normal\"|\"slow\", \"details\": string[]}.",
   ].join("\n")
 
   const userPrompt = [
+    `Signal id: ${signal.id ?? "unknown"}`,
+    `User id: ${signal.user_id ?? "unknown"}`,
     `Signal status: ${signal.status ?? "unknown"}`,
+    `Signal created: ${signal.created_at ?? "unknown"}`,
+    `Is modification / reply: ${signal.is_modification ? "yes" : "no"}${signal.parent_signal_id ? ` (parent signal id: ${signal.parent_signal_id})` : ""}`,
     `Channel: ${channelName ?? "(unknown)"}`,
     `Signal skip reason: ${signal.skip_reason ?? "(none)"}`,
     `Canonical channel signal skip reason: ${channelSkipReason ?? "(none)"}`,
-    `Selected trade: ${snippet(focusedTrade, 1200)}`,
-    `Trades linked to this signal and broker account: ${snippet(focusedTrades, 3000)}`,
-    `All linked trades for this signal: ${snippet(allTrades, 4000)}`,
-    `Successful order sends: ${snippet(orderLogs, 3500)}`,
-    `Management actions matching the selected ticket: ${snippet(focusedManagementLogs, 3000)}`,
-    `Management tickets that do not match the selected ticket: ${mismatchedManagementTickets.join(", ") || "none recorded"}`,
-    `Range-trade evidence: ${snippet(rangeEvidence, 2500)}`,
+    `Raw message: ${full(signal.raw_message)}`,
+    `Parsed data (full): ${full(signal.parsed_data)}`,
+    `Stored AI intent (_intent): ${full(storedIntent)}`,
+    `Model decision chain (_verification): ${full(verification)}`,
+    `Pipeline timestamps (raw, ms epoch): ${full(signal.pipeline_ts)}`,
     `Stage durations: ${stageLines || "none recorded"}`,
+    `Selected trade: ${full(focusedTrade)}`,
+    `Broker account (selected trade): ${full(brokerAccount)}`,
+    `Dispatch claims (selected broker): ${full(dispatchClaims)}`,
+    `Trades linked to this signal and broker account: ${full(focusedTrades)}`,
+    `All linked trades for this signal: ${full(allTrades)}`,
+    `Parent signal (reply target): ${full(parentSignal)}`,
+    `Canonical channel signal: ${full(channelSignal)}`,
+    `Listener events (full): ${full(listenerEvents)}`,
+    `All execution attempts, newest first (FULL payloads): ${(logs ?? []).map((l) => JSON.stringify({ action: l.action, status: l.status, error_message: l.error_message, request_payload: l.request_payload, response_payload: l.response_payload, created_at: l.created_at })).join("\n") || "none"}`,
     `Attempt history (all time): ${counts.total} total — ${counts.failed} failed, ${counts.skipped} skipped, ${counts.success} succeeded.`,
-    `Newest attempts (newest first): ${(logs ?? []).map((l) => `${l.action}=${l.status}${l.error_message ? ` (${l.error_message.slice(0, 120)})` : ""} @ ${l.created_at ?? ""}`).join("; ") || "none"}`,
-    `Raw message: ${snippet(signal.raw_message, 1000)}`,
-    `Parsed: ${snippet(signal.parsed_data, 600)}`,
+    `Successful order sends (structured): ${full(orderLogs)}`,
+    `Management actions matching the selected ticket: ${full(focusedManagementLogs)}`,
+    `Management tickets that do not match the selected ticket: ${mismatchedManagementTickets.join(", ") || "none recorded"}`,
+    `Range-trade evidence: ${full(rangeEvidence)}`,
   ].join("\n")
 
   const { content, status, error } = await callOpenAI(systemPrompt, userPrompt)
   if (error) return json({ error: `OpenAI request failed: ${status} ${error}` }, 502)
 
-  let parsed: { summary?: string; anomalies?: string[]; overall?: string } = {}
+  let parsed: { summary?: string; anomalies?: string[]; overall?: string; details?: string[] } = {}
   try {
     parsed = JSON.parse(content ?? "{}")
   } catch {
@@ -246,6 +326,7 @@ async function explainSignal(
     explanation: parsed.summary ?? "No explanation returned.",
     anomalies: Array.isArray(parsed.anomalies) ? parsed.anomalies : [],
     overall: ["fast", "normal", "slow"].includes(parsed.overall ?? "") ? parsed.overall : "normal",
+    details: Array.isArray(parsed.details) ? parsed.details : [],
   })
 }
 
