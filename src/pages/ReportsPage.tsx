@@ -8,38 +8,15 @@ import { ExportButton } from '../components/ExportButton';
 import { Card } from '../components/ui/Card';
 import { Select } from '../components/ui/Select';
 import { Input } from '../components/ui/Input';
+import { ReportDetailModal, CATEGORY_LABELS, type ReportRow } from '../components/ReportDetailModal';
 import { Search, FileWarning } from 'lucide-react';
 import clsx from 'clsx';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie, Legend } from 'recharts';
 import { CHART_PALETTE, tooltipStyle, gridStyle, axisStyle } from '../lib/chartTheme';
 import type { Column } from '../components/DataTable';
 
-interface ReportRow {
-  id: string;
-  user_id: string | null;
-  user_display_name: string | null;
-  symbol: string | null;
-  direction: string | null;
-  category: string | null;
-  ticket: string | null;
-  broker_label: string | null;
-  reason: string | null;
-  status: string | null;
-  created_at: string | null;
-}
-
 const PAGE_SIZE = 50;
 const FETCH_LIMIT = 500;
-
-const CATEGORY_LABELS: Record<string, string> = {
-  wrong_entry: 'Wrong entry price',
-  wrong_sl: 'Wrong stop loss',
-  wrong_tp: 'Wrong take profit',
-  wrong_direction: 'Wrong direction',
-  wrong_lots: 'Wrong lot size',
-  not_executed: 'Not executed',
-  other: 'Other',
-};
 
 export function ReportsPage() {
   const [rows, setRows] = useState<ReportRow[]>([]);
@@ -50,6 +27,7 @@ export function ReportsPage() {
   const [dateTo, setDateTo] = useState('');
   const [page, setPage] = useState(1);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [selectedReport, setSelectedReport] = useState<ReportRow | null>(null);
 
   useEffect(() => { setPage(1); }, [statusFilter, symbolSearch, dateFrom, dateTo]);
 
@@ -60,7 +38,7 @@ export function ReportsPage() {
     (async () => {
       let q = adminSupabase
         .from('trade_reports')
-        .select('id, user_id, symbol, direction, category, ticket, broker_label, reason, status, created_at')
+        .select('id, user_id, symbol, direction, category, ticket, broker_label, reason, status, entry_price, sl, tp, lot_size, created_at')
         .order('created_at', { ascending: false })
         .limit(FETCH_LIMIT);
       if (dateFrom) q = q.gte('created_at', `${dateFrom}T00:00:00Z`);
@@ -139,7 +117,7 @@ export function ReportsPage() {
       <button
         type="button"
         disabled={updatingId === r.id}
-        onClick={() => handleToggleStatus(r)}
+        onClick={e => { e.stopPropagation(); handleToggleStatus(r); }}
         className={clsx(
           'text-[11px] font-medium px-2.5 py-1 rounded-md border transition-colors whitespace-nowrap',
           (r.status ?? '') === 'resolved'
@@ -301,9 +279,14 @@ export function ReportsPage() {
           data={paged}
           loading={loading}
           rowKey={r => r.id}
+          onRowClick={r => setSelectedReport(r)}
         />
         <Pagination page={page} totalPages={Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))} totalCount={filtered.length} pageSize={PAGE_SIZE} onPageChange={setPage} />
       </Card>
+
+      {selectedReport && (
+        <ReportDetailModal report={selectedReport} onClose={() => setSelectedReport(null)} />
+      )}
     </div>
   );
 }

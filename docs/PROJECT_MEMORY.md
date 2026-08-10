@@ -2,6 +2,18 @@
 
 ## Changelog
 
+### 2026-08-10 — Reports page: click a report row to open full detail modal (report, trade, Telegram message + AI analysis)
+
+- **Context (user request):** "For reported trades, i should be able to open it, see the details of what the user reported, the details of the trade, the telegram message and channel, an ai analysis of the trade too."
+- **NEW `src/components/ReportDetailModal.tsx`:** exports `ReportRow` (now includes `entry_price`/`sl`/`tp`/`lot_size`) and `CATEGORY_LABELS`. Sections:
+  - **What the user reported** — category, reason, ticket, broker, entry/SL/TP/lot as submitted.
+  - **The trade** — matches the report's `ticket` against `trades.metaapi_order_id` (+ `user_id`), lists up to 5 matching trades with status/profit/entry/SL/TP/opened/closed. The report ticket equals the broker ticket at report time; trades store the same value in `metaapi_order_id`.
+  - **Telegram message & channel** — via `useSignalPipeline(firstTrade.signal_id)`: channel display name, signal status, raw message (uncollapsed), parsed data.
+  - **AI analysis** — reuses the existing `AiExplainSection` (edge function `trade-pipeline-explainer`) with `signalId`/`tradeId`/`brokerAccountId` from the first linked trade. Falls back to a note when no linked signal exists.
+- **`src/pages/ReportsPage.tsx`:** imports `ReportRow`/`CATEGORY_LABELS` from the modal (dedup); query now selects the extra report fields; table rows are clickable (`onRowClick` → `setSelectedReport`); Resolve/Reopen button calls `e.stopPropagation()` so it doesn't open the modal; modal rendered at the bottom.
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors; 2 `react-refresh/only-export-components` warnings — the pre-existing `PipelineSections.tsx` one plus the new `ReportDetailModal.tsx` one for its shared type/const exports), `npm run build` ✓.
+- **Follow-up:** none.
+
 ### 2026-08-10 — Applied admin read/update policies for `trade_reports` to staging (axdcledcyhyvzrnfkwat)
 
 - **Context (user request):** `/reports` resolve only works if `20260810000000_admin_read_update_trade_reports.sql` is applied — apply it to staging too.
