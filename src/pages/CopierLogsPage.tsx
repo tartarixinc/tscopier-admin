@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react';
 import { authSupabase as adminSupabase, fetchDisplayNames } from '../lib/adminSupabase';
-import { formatDate, formatRelative } from '../lib/formatters';
+import { formatRelative } from '../lib/formatters';
 import { DataTable, Pagination } from '../components/DataTable';
 import { StatusBadge } from '../components/StatusBadge';
 import { UserLink } from '../components/UserLink';
-import { JsonViewer } from '../components/JsonViewer';
 import { Select } from '../components/ui/Select';
 import { Input } from '../components/ui/Input';
 import { Card } from '../components/ui/Card';
+import { SignalDetailModal } from '../components/SignalDetailModal';
+import { ErrorDetailModal } from '../components/ErrorDetailModal';
 import { Search } from 'lucide-react';
+import { executionLogToErrorItem, isFailureStatus, type ErrorItem } from '../lib/errors';
 import type { Column } from '../components/DataTable';
 
 interface CopierLogRow {
@@ -36,7 +38,16 @@ export function CopierLogsPage() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [selectedSignalId, setSelectedSignalId] = useState<string | null>(null);
+  const [selectedError, setSelectedError] = useState<ErrorItem | null>(null);
+
+  function handleRowClick(r: CopierLogRow) {
+    if (isFailureStatus(r.status)) {
+      setSelectedError(executionLogToErrorItem(r));
+    } else {
+      setSelectedSignalId(r.signal_id);
+    }
+  }
 
   useEffect(() => { setPage(1); }, [statusFilter, actionFilter, userSearch]);
 
@@ -130,45 +141,18 @@ export function CopierLogsPage() {
           data={data}
           loading={loading}
           rowKey={r => r.id}
-          onRowClick={r => setExpandedId(prev => prev === r.id ? null : r.id)}
-          expandedRowKey={expandedId}
-          expandedContent={r => (
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
-                <div>
-                  <p className="font-semibold text-slate-400 mb-0.5">Signal ID</p>
-                  <p className="text-slate-300 font-mono">{r.signal_id ?? '—'}</p>
-                </div>
-                <div>
-                  <p className="font-semibold text-slate-400 mb-0.5">Broker Account</p>
-                  <p className="text-slate-300">{r.broker_label ?? r.broker_account_id ?? '—'}</p>
-                </div>
-                <div>
-                  <p className="font-semibold text-slate-400 mb-0.5">Timestamp</p>
-                  <p className="text-slate-300">{formatDate(r.created_at)}</p>
-                </div>
-              </div>
-              {r.error_message && (
-                <div>
-                  <p className="text-xs font-semibold text-error-400 mb-1">Error Message</p>
-                  <pre className="text-xs text-error-400 whitespace-pre-wrap break-all bg-slate-900 dark:bg-slate-950 p-3 rounded-lg">{r.error_message}</pre>
-                </div>
-              )}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                  <p className="text-xs font-semibold text-slate-400 mb-2">Request Payload</p>
-                  <JsonViewer data={r.request_payload} collapsed={false} />
-                </div>
-                <div>
-                  <p className="text-xs font-semibold text-slate-400 mb-2">Response Payload</p>
-                  <JsonViewer data={r.response_payload} collapsed={false} />
-                </div>
-              </div>
-            </div>
-          )}
+          onRowClick={handleRowClick}
         />
         <Pagination page={page} totalPages={Math.max(1, Math.ceil(total / PAGE_SIZE))} totalCount={total} pageSize={PAGE_SIZE} onPageChange={setPage} />
       </Card>
+
+      {selectedError && (
+        <ErrorDetailModal error={selectedError} onClose={() => setSelectedError(null)} />
+      )}
+
+      {selectedSignalId && (
+        <SignalDetailModal signalId={selectedSignalId} onClose={() => setSelectedSignalId(null)} />
+      )}
     </div>
   );
 }

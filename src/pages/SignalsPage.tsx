@@ -4,11 +4,13 @@ import { formatDate, truncate } from '../lib/formatters';
 import { DataTable, Pagination } from '../components/DataTable';
 import { StatusBadge } from '../components/StatusBadge';
 import { UserLink } from '../components/UserLink';
-import { JsonViewer } from '../components/JsonViewer';
 import { ExportButton } from '../components/ExportButton';
+import { SignalDetailModal } from '../components/SignalDetailModal';
+import { ErrorDetailModal } from '../components/ErrorDetailModal';
 import { Input } from '../components/ui/Input';
 import { Select } from '../components/ui/Select';
 import { Card } from '../components/ui/Card';
+import { failedSignalToErrorItem, type ErrorItem } from '../lib/errors';
 import { Search } from 'lucide-react';
 import type { Column } from '../components/DataTable';
 
@@ -18,6 +20,7 @@ interface SignalRow {
   user_display_name: string | null;
   channel_display_name: string | null;
   status: string;
+  skip_reason: string | null;
   raw_message: string | null;
   parsed_data: unknown;
   is_modification: boolean;
@@ -37,7 +40,16 @@ export function SignalsPage() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [selectedSignalId, setSelectedSignalId] = useState<string | null>(null);
+  const [selectedError, setSelectedError] = useState<ErrorItem | null>(null);
+
+  function handleRowClick(r: SignalRow) {
+    if (r.status === 'failed') {
+      setSelectedError(failedSignalToErrorItem(r));
+    } else {
+      setSelectedSignalId(r.id);
+    }
+  }
 
   useEffect(() => { setPage(1); }, [statusFilter, search, dateFrom, dateTo]);
 
@@ -51,7 +63,7 @@ export function SignalsPage() {
     let q = adminSupabase
       .from('signals')
       .select(
-        'id, user_id, channel_id, status, raw_message, parsed_data, is_modification, parent_signal_id, telegram_message_id, created_at',
+        'id, user_id, channel_id, status, skip_reason, raw_message, parsed_data, is_modification, parent_signal_id, telegram_message_id, created_at',
         { count: 'exact' }
       )
       .order('created_at', { ascending: false })
@@ -147,23 +159,18 @@ export function SignalsPage() {
           data={data}
           loading={loading}
           rowKey={r => r.id}
-          onRowClick={r => setExpandedId(prev => prev === r.id ? null : r.id)}
-          expandedRowKey={expandedId}
-          expandedContent={r => (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <p className="text-xs font-semibold text-slate-400 mb-2">Full Raw Message</p>
-                <pre className="text-xs text-slate-300 bg-slate-900 dark:bg-slate-950 p-3 rounded-lg overflow-x-auto whitespace-pre-wrap max-h-48">{r.raw_message ?? '—'}</pre>
-              </div>
-              <div>
-                <p className="text-xs font-semibold text-slate-400 mb-2">Parsed Data</p>
-                <JsonViewer data={r.parsed_data} collapsed={false} />
-              </div>
-            </div>
-          )}
+          onRowClick={handleRowClick}
         />
         <Pagination page={page} totalPages={Math.max(1, Math.ceil(total / PAGE_SIZE))} totalCount={total} pageSize={PAGE_SIZE} onPageChange={setPage} />
       </Card>
+
+      {selectedError && (
+        <ErrorDetailModal error={selectedError} onClose={() => setSelectedError(null)} />
+      )}
+
+      {selectedSignalId && (
+        <SignalDetailModal signalId={selectedSignalId} onClose={() => setSelectedSignalId(null)} />
+      )}
     </div>
   );
 }
