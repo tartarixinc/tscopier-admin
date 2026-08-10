@@ -258,6 +258,12 @@ export function ReportDetailModal({ report, onClose }: ReportDetailModalProps) {
                 signalId={firstTrade.signal_id}
                 tradeId={firstTrade.id}
                 brokerAccountId={firstTrade.broker_account_id}
+                report={{
+                  category: report.category,
+                  reason: report.reason,
+                  symbol: report.symbol,
+                  direction: report.direction,
+                }}
               />
             )}
           </section>

@@ -2,6 +2,16 @@
 
 ## Changelog
 
+### 2026-08-10 — Report detail modal AI analysis now answers the report complaint (reads the Telegram signal too)
+
+- **Context (user request):** the AI analysis for a reported trade ("Wrong stop loss — No SL") answered the wrong question — it only commented on pipeline latency ("Telegram to listener took 4062 ms") and never addressed the report. User: "See how stupid the ai analysis for a reported trade is" and "It should be able to read the telegram message too."
+- **Root cause:** `AiExplainSection` invoked the `trade-pipeline-explainer` edge function with only signal/trade/broker IDs. The report (category + reason) was never sent, so the prompt had no complaint to judge. The raw Telegram message WAS already in the input, but no rule told the AI to use it.
+- **`supabase/functions/trade-pipeline-explainer/index.ts`:** `explainSignal` now takes an optional `report` object. New system rule: when a USER REPORT is present it is the PRIMARY question — read the original Telegram signal text and the actual trade, judge whether the complaint is valid (e.g. "No SL" → is stoploss 0 or unconfirmed?), and lead the summary with the verdict. User prompt gains a `USER REPORT (answer this first):` line with category/reason/symbol/direction. Handler parses `body.report`.
+- **`src/components/pipeline/PipelineSections.tsx` (`AiExplainSection`):** accepts an optional `report` prop, forwards it in the invoke body, and includes category+reason in the cache key so report-aware analyses aren't served from the plain-pipeline cache.
+- **`src/components/ReportDetailModal.tsx`:** passes the report (category/reason/symbol/direction) into `AiExplainSection`.
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors, 2 pre-existing-style `react-refresh/only-export-components` warnings), `npm run build` ✓. Deno typecheck of the edge function not run (no `deno` binary on PATH).
+- **Follow-up:** deploy the updated `trade-pipeline-explainer` edge function (Netlify/Supabase) for the report-aware prompt to take effect.
+
 ### 2026-08-10 — Reports page: click a report row to open full detail modal (report, trade, Telegram message + AI analysis)
 
 - **Context (user request):** "For reported trades, i should be able to open it, see the details of what the user reported, the details of the trade, the telegram message and channel, an ai analysis of the trade too."

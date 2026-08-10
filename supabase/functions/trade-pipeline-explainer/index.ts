@@ -135,6 +135,7 @@ async function explainSignal(
   signalId: string,
   focusedTradeId: string | null,
   focusedBrokerAccountId: string | null,
+  report: { category?: string | null; reason?: string | null; symbol?: string | null; direction?: string | null } | null,
 ): Promise<Response> {
   const [{ data: signal }, { data: trades }, { data: logs }, { data: logStatuses }] = await Promise.all([
     supabase.from("signals").select("id, user_id, raw_message, parsed_data, status, skip_reason, pipeline_ts, channel_signal_id, channel_id, telegram_message_id, parent_signal_id, is_modification, created_at, telegram_channels(display_name, signal_channel_id)").eq("id", signalId).maybeSingle(),
@@ -276,6 +277,7 @@ async function explainSignal(
     "- If early attempts failed but later ones succeeded, describe the outcome timeline — do not conclude the signal failed overall.",
     "- If the signal was SKIPPED, lead with the skip reason and explain why the trade was not taken.",
     "- If ALL attempts failed, explain exactly which stage failed, the error, and its likely cause.",
+    "- If a USER REPORT is provided, it is the PRIMARY question: read the original Telegram signal text and the actual trade, then judge whether the complaint is valid (e.g. report says 'No SL' → is stoploss 0 or not broker-confirmed? signal says SL should exist → did the copier miss it?). Lead the summary with the verdict on the report, then support it with evidence.",
     "- If timestamps are missing or a stage is absent, say what cannot be determined.",
     "- Use short sentences and ordinary words. Avoid pipeline jargon (dispatch, claim, persistence, reconciliation) unless you immediately explain it.",
     "Reply with strict JSON: {\"summary\": string, \"anomalies\": string[], \"overall\": \"fast\"|\"normal\"|\"slow\", \"details\": string[]}.",
@@ -286,6 +288,9 @@ async function explainSignal(
     `User id: ${signal.user_id ?? "unknown"}`,
     `Signal status: ${signal.status ?? "unknown"}`,
     `Signal created: ${signal.created_at ?? "unknown"}`,
+    report
+      ? `USER REPORT (answer this first): category=${report.category ?? "unknown"}, reason="${report.reason ?? ""}", reported symbol=${report.symbol ?? "unknown"}, reported direction=${report.direction ?? "unknown"}`
+      : "(no user report)",
     `Is modification / reply: ${signal.is_modification ? "yes" : "no"}${signal.parent_signal_id ? ` (parent signal id: ${signal.parent_signal_id})` : ""}`,
     `Channel: ${channelName ?? "(unknown)"}`,
     `Signal skip reason: ${signal.skip_reason ?? "(none)"}`,
@@ -417,8 +422,21 @@ Deno.serve(async (req: Request) => {
     const focusedBrokerAccountId = typeof body?.broker_account_id === "string" ? body.broker_account_id : null
     const logId = typeof body?.log_id === "string" ? body.log_id : null
 
+    let report: { category?: string | null; reason?: string | null; symbol?: string | null; direction?: string | null } | null = null
+    if (body?.report && typeof body.report === "object") {
+      const r = body.report as Record<string, unknown>
+      if (typeof r.category === "string" || typeof r.reason === "string" || typeof r.symbol === "string" || typeof r.direction === "string") {
+        report = {
+          category: typeof r.category === "string" ? r.category : null,
+          reason: typeof r.reason === "string" ? r.reason : null,
+          symbol: typeof r.symbol === "string" ? r.symbol : null,
+          direction: typeof r.direction === "string" ? r.direction : null,
+        }
+      }
+    }
+
     if (logId) return await explainLog(supabase, logId)
-    if (signalId) return await explainSignal(supabase, signalId, focusedTradeId, focusedBrokerAccountId)
+    if (signalId) return await explainSignal(supabase, signalId, focusedTradeId, focusedBrokerAccountId, report)
     return json({ error: "signal_id or log_id is required" }, 400)
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500)

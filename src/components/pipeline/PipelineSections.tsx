@@ -220,16 +220,18 @@ export function AiExplainSection({
   signalId,
   tradeId,
   brokerAccountId,
+  report,
 }: {
   signalId: string | null;
   tradeId?: string | null;
   brokerAccountId?: string | null;
+  report?: { category?: string | null; reason?: string | null; symbol?: string | null; direction?: string | null } | null;
 }) {
   const [ai, setAi] = useState<{ status: 'idle' | 'loading' | 'done' | 'error'; data?: AiExplanation; message?: string }>({ status: 'idle' });
 
   async function explainWithAi() {
     if (!signalId) return;
-    const cacheKey = `${signalId}:${tradeId ?? 'signal'}`;
+    const cacheKey = `${signalId}:${tradeId ?? 'signal'}:${report?.category ?? ''}:${report?.reason ?? ''}`;
     const cached = aiCache.get(cacheKey);
     if (cached) {
       setAi({ status: 'done', data: cached });
@@ -237,7 +239,12 @@ export function AiExplainSection({
     }
     setAi({ status: 'loading' });
     const { data, error } = await adminSupabase.functions.invoke('trade-pipeline-explainer', {
-      body: { signal_id: signalId, trade_id: tradeId ?? undefined, broker_account_id: brokerAccountId ?? undefined },
+      body: {
+        signal_id: signalId,
+        trade_id: tradeId ?? undefined,
+        broker_account_id: brokerAccountId ?? undefined,
+        report: report ?? undefined,
+      },
     });
     if (error || !data?.explanation) {
       setAi({ status: 'error', message: (error as { message?: string })?.message ?? (data as { error?: string })?.error ?? 'Failed to generate explanation.' });
