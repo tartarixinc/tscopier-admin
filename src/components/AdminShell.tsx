@@ -4,10 +4,12 @@ import {
   LayoutDashboard, Users, Server, MessageSquare, Zap, TrendingUp,
   FlaskConical, LogOut,
   Search, UserCircle, Activity, DollarSign, Cog, Menu, X, AlertTriangle,
-  Copy, Cpu
+  Copy, Cpu, ShieldAlert, FileWarning
 } from 'lucide-react';
 import { ThemeToggle } from './ui/ThemeToggle';
 import { authSupabase } from '../lib/adminSupabase';
+import { clearCache } from '../lib/queryCache';
+import { stopRealtime } from '../lib/realtimeBridge';
 import { shortId } from '../lib/formatters';
 import { adminEnvSessionKey, getAdminEnv, isEnvConfigured, setAdminEnv, ENVIRONMENTS, projectRefOf, type AdminEnv } from '../lib/environment';
 import clsx from 'clsx';
@@ -67,6 +69,7 @@ const navigation: NavGroup[] = [
       { label: 'Open Positions', to: '/trades/open', icon: TrendingUp },
       { label: 'Execution Logs', to: '/trades/execution-logs', icon: TrendingUp },
       { label: 'Analytics', to: '/trades/analytics', icon: TrendingUp },
+      { label: 'Reports', to: '/reports', icon: FileWarning },
     ],
   },
   {
@@ -78,6 +81,7 @@ const navigation: NavGroup[] = [
   {
     title: 'Monitoring',
     items: [
+      { label: 'Errors', to: '/errors', icon: ShieldAlert },
       { label: 'Listener Events', to: '/monitoring/listener-events', icon: Activity },
       { label: 'Worker Leases', to: '/monitoring/workers', icon: Activity },
       { label: 'Copier Engine', to: '/monitoring/copier-engine', icon: Cpu },
@@ -273,6 +277,8 @@ export function AdminShell({ children }: AdminShellProps) {
 
   async function handleLogout() {
     await authSupabase.auth.signOut();
+    clearCache();
+    stopRealtime();
     sessionStorage.removeItem(adminEnvSessionKey('admin_authed'));
     sessionStorage.removeItem(adminEnvSessionKey('admin_user_id'));
     sessionStorage.removeItem(adminEnvSessionKey('admin_display_name'));

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import { authSupabase } from '../lib/adminSupabase';
+import { clearCache } from '../lib/queryCache';
 import { adminEnvSessionKey, getAdminEnv } from '../lib/environment';
 
 interface AuthGuardProps {
@@ -18,6 +19,7 @@ export function AuthGuard({ children }: AuthGuardProps) {
     let cancelled = false;
     authSupabase.auth.getSession().then(({ data }) => {
       if (cancelled) return;
+      if (!data.session) clearCache();
       setHasSession(Boolean(data.session));
       setChecking(false);
     });

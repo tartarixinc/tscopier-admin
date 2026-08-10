@@ -1,10 +1,12 @@
 import { useState } from 'react';
-import { Activity, Clock, ShieldAlert, ShieldCheck, Sparkles } from 'lucide-react';
+import { Activity, Clock, ShieldAlert, ShieldCheck, Sparkles, AlertTriangle, Info } from 'lucide-react';
 import { authSupabase as adminSupabase } from '../../lib/adminSupabase';
 import { formatDate } from '../../lib/formatters';
 import type { PipelineTimelineEvent, PipelineStageStat } from '../../lib/pipelineTimeline';
+import type { PipelineIssue } from '../../lib/pipelineIssues';
 import { JsonViewer } from '../JsonViewer';
 import { StatusBadge } from '../StatusBadge';
+import { Badge } from '../ui/Badge';
 import { tooltipStyle, gridStyle, axisStyle } from '../../lib/chartTheme';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import clsx from 'clsx';
@@ -218,16 +220,18 @@ export function AiExplainSection({
   signalId,
   tradeId,
   brokerAccountId,
+  report,
 }: {
   signalId: string | null;
   tradeId?: string | null;
   brokerAccountId?: string | null;
+  report?: { category?: string | null; reason?: string | null; symbol?: string | null; direction?: string | null } | null;
 }) {
   const [ai, setAi] = useState<{ status: 'idle' | 'loading' | 'done' | 'error'; data?: AiExplanation; message?: string }>({ status: 'idle' });
 
   async function explainWithAi() {
     if (!signalId) return;
-    const cacheKey = `${signalId}:${tradeId ?? 'signal'}`;
+    const cacheKey = `${signalId}:${tradeId ?? 'signal'}:${report?.category ?? ''}:${report?.reason ?? ''}`;
     const cached = aiCache.get(cacheKey);
     if (cached) {
       setAi({ status: 'done', data: cached });
@@ -235,7 +239,12 @@ export function AiExplainSection({
     }
     setAi({ status: 'loading' });
     const { data, error } = await adminSupabase.functions.invoke('trade-pipeline-explainer', {
-      body: { signal_id: signalId, trade_id: tradeId ?? undefined, broker_account_id: brokerAccountId ?? undefined },
+      body: {
+        signal_id: signalId,
+        trade_id: tradeId ?? undefined,
+        broker_account_id: brokerAccountId ?? undefined,
+        report: report ?? undefined,
+      },
     });
     if (error || !data?.explanation) {
       setAi({ status: 'error', message: (error as { message?: string })?.message ?? (data as { error?: string })?.error ?? 'Failed to generate explanation.' });
@@ -324,7 +333,61 @@ export function AiExplainSection({
   );
 }
 
-export function ExecutionAttemptsSection({ logs }: { logs: ExecutionLogRow[] }) {
+export const MANAGEMENT_ACTIONS = new Set([
+  'partial_tp_fired',
+  'trailing_stop',
+  'auto_be',
+  'breakeven',
+  'range_basket_tp_rebalance',
+  'range_broker_pending_inserted',
+  'virtual_pending_fired',
+  'modify_sl',
+  'modify_tp',
+  'close_trade',
+  'mgmt_close',
+  'mgmt_breakeven',
+]);
+
+const ISSUE_SOURCE_LABELS: Record<PipelineIssue['source'], string> = {
+  signal: 'Signal',
+  channel: 'Channel',
+  execution: 'Execution',
+};
+
+export function IssuesFoundSection({ issues }: { issues: PipelineIssue[] }) {
+  if (issues.length === 0) return null;
+  return (
+    <section>
+      <h3 className="flex items-center gap-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">
+        <AlertTriangle className="w-4 h-4 text-error-500" />
+        Issues found ({issues.length})
+      </h3>
+      <div className="space-y-2">
+        {issues.map(issue => (
+          <div key={issue.key} className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 space-y-1.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="muted">{ISSUE_SOURCE_LABELS[issue.source]}</Badge>
+              {issue.action && <span className="text-[10px] font-medium text-slate-500 font-mono">{issue.action}</span>}
+              <span className={issue.severity === 'transient' ? 'badge bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 text-[10px]' : 'badge bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300 text-[10px]'}>
+                {issue.severity === 'transient' ? 'Transient' : 'Major'}
+              </span>
+              {issue.embedded && (
+                <span className="text-[10px] text-slate-400 flex items-center gap-1">
+                  <Info className="w-3 h-3" /> embedded in attempt payload
+                </span>
+              )}
+              {issue.at && <span className="text-[10px] text-slate-400 font-mono ml-auto">{formatDate(issue.at)}</span>}
+            </div>
+            {issue.title && <p className="text-sm font-medium text-slate-800 dark:text-slate-100">{issue.title}</p>}
+            <p className="text-xs text-slate-500 font-mono break-words">{issue.raw}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export function ExecutionAttemptsSection({ logs, expectedTicket }: { logs: ExecutionLogRow[]; expectedTicket?: string | null }) {
   return (
     <section>
       <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">
@@ -352,6 +415,14 @@ export function ExecutionAttemptsSection({ logs }: { logs: ExecutionLogRow[] }) 
                 <StatusBadge status={log.status} dot />
                 <span className="text-[10px] text-slate-400 font-mono ml-auto">{formatDate(log.created_at)}</span>
               </div>
+              {MANAGEMENT_ACTIONS.has(log.action) && (
+                <p className="text-[11px] text-slate-500">
+                  Broker ticket for this action:{' '}
+                  {expectedTicket
+                    ? <span className="font-mono text-slate-700 dark:text-slate-200">{expectedTicket}</span>
+                    : <span className="text-error-500 font-medium">none on linked trade — this is why it fails with "unknown ticket"</span>}
+                </p>
+              )}
               {log.error_message && (
                 <div className="space-y-1">
                   <p className="text-xs text-error-600 dark:text-error-400 break-words">Broker error: {log.error_message}</p>
