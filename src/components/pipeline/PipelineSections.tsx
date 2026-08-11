@@ -536,8 +536,8 @@ const FINAL_PATH_LABELS: Record<string, string> = {
 
 const SOURCE_BADGES: Record<string, { label: string; tone: 'emerald' | 'amber' | 'slate' | 'sky' }> = {
   deterministic: { label: 'Regex', tone: 'slate' },
-  cerebras: { label: 'Cerebras OSS', tone: 'sky' },
-  openai: { label: 'OpenAI (OSS fallback)', tone: 'sky' },
+  cerebras: { label: 'Cerebras (OpenAI OSS)', tone: 'sky' },
+  openai: { label: 'OpenAI', tone: 'sky' },
   gpt4o: { label: 'GPT-4o', tone: 'emerald' },
 };
 
@@ -715,8 +715,8 @@ export function ModelDecisionChainSection({ signal, listenerEvents }: {
   const fallbackEvtReason = fallbackEvt && typeof fallbackEvt.detail === 'object' && fallbackEvt.detail !== null
     ? (fallbackEvt.detail as { reason?: unknown }).reason
     : null;
-  const stage2FallbackNote = chain.stage2?.source === 'openai'
-    ? `Skipped stage 2 — Cerebras unavailable, fell back to OpenAI${fallbackEvtReason != null ? `: ${String(fallbackEvtReason)}` : ''}`
+  const stage2FallbackNote = fallbackEvt != null && chain.stage2?.source === 'openai'
+    ? `Cerebras request failed${fallbackEvtReason != null ? `: ${String(fallbackEvtReason)}` : ''} — stage 2 ran via the OpenAI API fallback.`
     : null;
 
   const finalPathLabel = FINAL_PATH_LABELS[chain.final.path] ?? `Path: ${chain.final.path}`;
@@ -818,6 +818,11 @@ export function AiVerificationSection({
         ? 'price_passed'
         : null;
 
+  const fallbackAiSource = fallbackDetail?.ai_source != null ? String(fallbackDetail.ai_source) : null;
+  const isOpenaiFallback = fallbackAiSource === 'openai';
+  const aiSourceRaw = reviewDetail?.ai_source ?? fallbackDetail?.ai_source ?? null;
+  const aiSourceLabel = aiSourceRaw != null ? sourceBadge(String(aiSourceRaw)).label : '—';
+
   if (!signal) return null;
 
   const pathBadge = aiKind
@@ -855,7 +860,7 @@ export function AiVerificationSection({
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
         <SummaryCell label="Signal status" value={signal.status ?? '—'} />
         <SummaryCell label="Confidence" value={aiConfidence != null ? String(aiConfidence) : hasConfidence ? String(confidence) : '—'} mono />
-        <SummaryCell label="AI source" value={String(reviewDetail?.ai_source ?? fallbackDetail?.ai_source ?? '—')} />
+        <SummaryCell label="AI source" value={aiSourceLabel} />
         <SummaryCell label="Review state" value={reviewState === 'pending' ? 'Pending' : reviewState === 'expired' ? 'Expired' : reviewState === 'price_passed' ? 'Rejected (price)' : 'None'} tone={reviewState ? (reviewState === 'pending' ? undefined : 'error') : undefined} />
       </div>
 
@@ -863,9 +868,13 @@ export function AiVerificationSection({
         <div className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300 flex items-start gap-2">
           <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />
           <div>
-            <p className="font-semibold">AI was unavailable — deterministic policy ran</p>
+            <p className="font-semibold">
+              {isOpenaiFallback
+                ? 'Cerebras request failed — stage 2 ran via the OpenAI API fallback.'
+                : 'AI was unavailable — deterministic policy ran'}
+            </p>
             <p className="mt-0.5 break-words">Reason: {String(fallbackDetail.reason)}</p>
-            {fallbackDetail.ai_intent != null && <p className="text-amber-600 dark:text-amber-400 mt-0.5">AI intent: {String(fallbackDetail.ai_intent)} · source: {String(fallbackDetail.ai_source ?? '—')}</p>}
+            {fallbackDetail.ai_intent != null && <p className="text-amber-600 dark:text-amber-400 mt-0.5">AI intent: {String(fallbackDetail.ai_intent)} · source: {fallbackAiSource != null ? sourceBadge(fallbackAiSource).label : '—'}</p>}
           </div>
         </div>
       )}

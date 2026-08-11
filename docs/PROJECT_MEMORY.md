@@ -2,6 +2,16 @@
 
 ## Changelog
 
+### 2026-08-11 — Model decision chain: truthful Cerebras labels + fallback notes gated on evidence (admin display fix)
+
+- **Context (user report):** an Aug 11 signal showed `source: 'openai'` in the Model decision chain and a note claiming `Skipped stage 2 — Cerebras unavailable, fell back to OpenAI` even though no `ai_parse_fallback` event existed. Investigation with the main-repo worker debug endpoint (`POST <listener>/internal/parse-ai-debug`, token from user) against prod `https://tscopier-listener-production.up.railway.app` proved **Cerebras is working** on prod right now — both a modify and an entry test message went through stage 2 with `source: "cerebras"` (~700–950 ms, `mode: "fastpath"`), no fallback. The old signal's `openai` source means it was parsed while Cerebras wasn't running (pre-fix build or an outage window); that state is no longer reproducible. So no Railway/env changes were needed — only the admin display was lying to the user.
+- **`src/components/pipeline/PipelineSections.tsx`:**
+  - `SOURCE_BADGES`: `cerebras` → **"Cerebras (OpenAI OSS)"**, `openai` → **"OpenAI"** (was "OpenAI (OSS fallback)"), `gpt4o` unchanged. The "OSS fallback" claim is no longer attached to the plain OpenAI badge.
+  - `stage2FallbackNote` (Model decision chain): now rendered **only when an `ai_parse_fallback` event actually exists** AND `chain.stage2.source === 'openai'`; reworded to `Cerebras request failed[: <reason>] — stage 2 ran via the OpenAI API fallback.` A bare `openai` source with no event now shows just the "OpenAI" badge with no note (no more invented "Skipped stage 2 — Cerebras unavailable").
+  - `AiVerificationSection`: "AI source" summary cell now maps the raw value through `sourceBadge` (so `cerebras`/`openai` show friendly labels, not raw strings). The fallback alert box title now says "Cerebras request failed — stage 2 ran via the OpenAI API fallback." when the event's `ai_source` is `openai` (was always "AI was unavailable — deterministic policy ran", which contradicted the recorded `ai_source: openai`); the generic deterministic-policy wording is kept only for fallback events without an OpenAI source.
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors; 2 pre-existing `react-refresh/only-export-components` warnings), `npm run build` ✓ (pre-existing chunk-size warning only).
+- **Follow-up:** none required. (Optional, for certainty on the old signal only: compare its `created_at` to the Railway deploy timestamp of the Cerebras fix — nothing actionable either way.)
+
 ### 2026-08-11 — Error Analytics page: rise/fall of errors over time, with an Analytics button on the Errors page
 
 - **Context (user request):** "Add a button on this page for analytics that we can use to see the rise and falls of total errors, make it a proper analytics page."
