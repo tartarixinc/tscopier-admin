@@ -54,7 +54,10 @@ function ManagementFailBanner({ error, count }: { error: string; count: number }
 
 /** Renders the full pipeline record for a signal: decision chain, verification,
  *  failure/skip banners, linked trade, timeline, latency, and execution attempts. */
-export function SignalPipelineBody(data: SignalPipelineData) {
+export function SignalPipelineBody(data: SignalPipelineData & {
+  report?: { category?: string | null; reason?: string | null; symbol?: string | null; direction?: string | null } | null;
+  context?: string | null;
+}) {
   const {
     signal,
     channelSignal,
@@ -71,6 +74,8 @@ export function SignalPipelineBody(data: SignalPipelineData) {
     channelSkipReason,
     firstFailure,
     issues,
+    report,
+    context,
   } = data;
 
   const failures = executionLogs.filter(l => l.status === 'failed');
@@ -147,7 +152,7 @@ export function SignalPipelineBody(data: SignalPipelineData) {
 
           <LatencyGanttSection durations={durations} />
 
-          <AiExplainSection signalId={signal?.id ?? null} />
+          <AiExplainSection signalId={signal?.id ?? null} tradeId={trade?.id ?? null} report={report} context={context} />
 
           <LatencyBreakdownSection stats={stats} />
 

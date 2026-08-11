@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { X, FileWarning, MessageSquare, User, Crosshair, Sparkles, ExternalLink } from 'lucide-react';
+import { X, FileWarning, User, Crosshair, MessageSquare } from 'lucide-react';
 import { authSupabase as adminSupabase } from '../lib/adminSupabase';
 import { formatDate, formatNumber } from '../lib/formatters';
 import { useSignalPipeline } from '../hooks/useSignalPipeline';
-import { AiExplainSection, SummaryCell } from './pipeline/PipelineSections';
+import { SummaryCell } from './pipeline/PipelineSections';
+import { SignalPipelineBody } from './pipeline/SignalPipelineBody';
 import { JsonViewer } from './JsonViewer';
 import { UserLink } from './UserLink';
 import { StatusBadge } from './StatusBadge';
@@ -146,7 +147,7 @@ export function ReportDetailModal({ report, onClose }: ReportDetailModalProps) {
           </button>
         </div>
 
-        <div className="px-5 py-4 space-y-6 max-h-[calc(100vh-12rem)] overflow-y-auto">
+        <div className="px-5 py-4 space-y-6 max-h-[calc(100vh-6rem)] overflow-y-auto">
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div className="rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700/60 px-3 py-2">
               <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1">
@@ -248,32 +249,20 @@ export function ReportDetailModal({ report, onClose }: ReportDetailModalProps) {
           </section>
 
           <section className="space-y-3">
-            <SectionTitle icon={Sparkles}>AI analysis</SectionTitle>
+            <SectionTitle icon={MessageSquare}>Signal pipeline</SectionTitle>
             {!firstTrade?.signal_id ? (
               <p className="text-xs text-slate-400">
-                No linked signal — AI analysis needs the signal pipeline. Open the linked trade from the Trades page to analyse it.
+                No linked signal for this trade, so the pipeline, execution attempts and AI analysis cannot be shown.
               </p>
             ) : (
-              <AiExplainSection
-                signalId={firstTrade.signal_id}
-                tradeId={firstTrade.id}
-                brokerAccountId={firstTrade.broker_account_id}
-                report={{
-                  category: report.category,
-                  reason: report.reason,
-                  symbol: report.symbol,
-                  direction: report.direction,
-                }}
-              />
+              <SignalPipelineBody {...pipeline} report={{
+                category: report.category,
+                reason: report.reason,
+                symbol: report.symbol,
+                direction: report.direction,
+              }} context="USER COMPLAINT MODAL — the administrator is investigating a trade report. The reported category and reason are the single most important thing. Priorities: (1) give a clear verdict on each claim in the report (VALID / PARTIALLY VALID / NOT VALID / CANNOT VERIFY), comparing what the Telegram signal actually said (quote exact lines) against what was sent to the broker and what is on the trade row; (2) explain exactly what went wrong if the complaint is valid; (3) keep the rest (latency, model chain, execution attempts) brief unless it explains the reported problem. Do not lead with latency or pipeline timing when a complaint is on the table." />
             )}
           </section>
-
-          {firstTrade?.signal_id && (
-            <p className="text-xs text-slate-400 flex items-center gap-1.5">
-              <ExternalLink className="w-3 h-3" />
-              This report is linked to signal <span className="font-mono">{firstTrade.signal_id}</span> — the full pipeline (execution attempts, latency, model chain) is on the Trades page.
-            </p>
-          )}
         </div>
       </div>
     </div>

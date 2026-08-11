@@ -458,7 +458,7 @@ export function TradePipelineModal({ trade, onClose }: TradePipelineModalProps) 
                 signalId={trade.signal_id}
                 tradeId={trade.id}
                 brokerAccountId={trade.broker_account_id}
-              />
+                context="TRADE DETAIL MODAL — the administrator is investigating one executed trade. Priorities: (1) did the trade open correctly and was its stop loss / take profit actually confirmed by the broker; (2) any anomalies in execution or management of THIS ticket; (3) latency and pipeline timing as context. There is no user complaint here, so do not look for one." />
 
               <LatencyBreakdownSection stats={stats} />
 

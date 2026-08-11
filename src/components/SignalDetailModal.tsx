@@ -50,7 +50,7 @@ export function SignalDetailModal({ signalId, onClose }: SignalDetailModalProps)
         </div>
 
         <div className="px-5 py-4 max-h-[calc(100vh-12rem)] overflow-y-auto">
-          <SignalPipelineBody {...pipeline} />
+          <SignalPipelineBody {...pipeline} context="SIGNAL DETAIL MODAL — the administrator is inspecting a single Telegram signal. Priorities: (1) did this signal end up executed, skipped, or failed, and why — lead with the outcome; (2) whether the signal was parsed correctly and by which model path; (3) latency and pipeline timing as a secondary performance view. There is no user complaint here, so do not look for one." />
         </div>
       </div>
     </div>
