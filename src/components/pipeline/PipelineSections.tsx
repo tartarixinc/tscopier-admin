@@ -75,6 +75,13 @@ function plainFailureReason(log: ExecutionLogRow): string | null {
   return null;
 }
 
+function payloadSkipReason(log: ExecutionLogRow): string | null {
+  if (log.status !== 'skipped') return null;
+  const payload = log.request_payload as { skipped_reason?: unknown; skip_reason?: unknown } | null;
+  const reason = payload?.skipped_reason ?? payload?.skip_reason;
+  return typeof reason === 'string' && reason.trim() ? reason.trim().replace(/_/g, ' ') : null;
+}
+
 export function PipelineTimelineSection({ events, finalStatus }: { events: PipelineTimelineEvent[]; finalStatus?: string | null }) {
   if (events.length === 0) return null;
   return (
@@ -221,17 +228,19 @@ export function AiExplainSection({
   tradeId,
   brokerAccountId,
   report,
+  context,
 }: {
   signalId: string | null;
   tradeId?: string | null;
   brokerAccountId?: string | null;
   report?: { category?: string | null; reason?: string | null; symbol?: string | null; direction?: string | null } | null;
+  context?: string | null;
 }) {
   const [ai, setAi] = useState<{ status: 'idle' | 'loading' | 'done' | 'error'; data?: AiExplanation; message?: string }>({ status: 'idle' });
 
   async function explainWithAi() {
     if (!signalId) return;
-    const cacheKey = `${signalId}:${tradeId ?? 'signal'}:${report?.category ?? ''}:${report?.reason ?? ''}`;
+    const cacheKey = `${signalId}:${tradeId ?? 'signal'}:${report?.category ?? ''}:${report?.reason ?? ''}:${context ?? ''}`;
     const cached = aiCache.get(cacheKey);
     if (cached) {
       setAi({ status: 'done', data: cached });
@@ -244,6 +253,7 @@ export function AiExplainSection({
         trade_id: tradeId ?? undefined,
         broker_account_id: brokerAccountId ?? undefined,
         report: report ?? undefined,
+        context: context ?? undefined,
       },
     });
     if (error || !data?.explanation) {
@@ -416,12 +426,30 @@ export function ExecutionAttemptsSection({ logs, expectedTicket }: { logs: Execu
                 <span className="text-[10px] text-slate-400 font-mono ml-auto">{formatDate(log.created_at)}</span>
               </div>
               {MANAGEMENT_ACTIONS.has(log.action) && (
-                <p className="text-[11px] text-slate-500">
-                  Broker ticket for this action:{' '}
-                  {expectedTicket
-                    ? <span className="font-mono text-slate-700 dark:text-slate-200">{expectedTicket}</span>
-                    : <span className="text-error-500 font-medium">none on linked trade — this is why it fails with "unknown ticket"</span>}
-                </p>
+                log.status === 'skipped'
+                  ? (
+                    <p className="text-[11px] text-slate-500">
+                      Skipped — no broker action.{' '}
+                      {payloadSkipReason(log) && (
+                        <span className="text-slate-600 dark:text-slate-300">Reason: {payloadSkipReason(log)}.</span>
+                      )}
+                    </p>
+                  )
+                  : (() => {
+                    const payload = log.request_payload as { ticket?: unknown } | null | undefined;
+                    const ticket = expectedTicket
+                      ?? (typeof payload?.ticket === 'number' || typeof payload?.ticket === 'string'
+                        ? String(payload.ticket)
+                        : null);
+                    return (
+                      <p className="text-[11px] text-slate-500">
+                        Broker ticket for this action:{' '}
+                        {ticket
+                          ? <span className="font-mono text-slate-700 dark:text-slate-200">{ticket}</span>
+                          : <span className="text-slate-400">not recorded in this attempt&apos;s payload</span>}
+                      </p>
+                    );
+                  })()
               )}
               {log.error_message && (
                 <div className="space-y-1">
