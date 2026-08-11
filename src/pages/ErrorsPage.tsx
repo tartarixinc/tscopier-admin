@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { authSupabase as adminSupabase, fetchDisplayNames } from '../lib/adminSupabase';
 import { formatDate, truncate } from '../lib/formatters';
 import { UserLink } from '../components/UserLink';
@@ -8,7 +9,8 @@ import { Select } from '../components/ui/Select';
 import { Card } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Input } from '../components/ui/Input';
-import { AlertTriangle, Search, Zap, Server, CopyX } from 'lucide-react';
+import { Button } from '../components/ui/Button';
+import { AlertTriangle, Search, Zap, Server, CopyX, BarChart3 } from 'lucide-react';
 import clsx from 'clsx';
 import {
   classifyErrorSeverity,
@@ -78,6 +80,7 @@ interface DeadLetterRow {
 }
 
 export function ErrorsPage() {
+  const navigate = useNavigate();
   const [categoryFilter, setCategoryFilter] = useState('');
   const [severityFilter, setSeverityFilter] = useState('');
   const [causeFilter, setCauseFilter] = useState('');
@@ -305,9 +308,15 @@ export function ErrorsPage() {
 
   return (
     <div className="space-y-4 animate-fade-in">
-      <div className="page-header">
-        <h1 className="page-title">Errors</h1>
-        <p className="page-subtitle">Failed executions, failed signals, broker connection errors and dead letters</p>
+      <div className="flex flex-col sm:flex-row items-start justify-between gap-3">
+        <div className="page-header mb-0">
+          <h1 className="page-title">Errors</h1>
+          <p className="page-subtitle">Failed executions, failed signals, broker connection errors and dead letters</p>
+        </div>
+        <Button variant="secondary" size="sm" onClick={() => navigate('/errors/analytics')}>
+          <BarChart3 className="w-3.5 h-3.5" />
+          Error analytics
+        </Button>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

@@ -2,6 +2,21 @@
 
 ## Changelog
 
+### 2026-08-11 — Error Analytics page: rise/fall of errors over time, with an Analytics button on the Errors page
+
+- **Context (user request):** "Add a button on this page for analytics that we can use to see the rise and falls of total errors, make it a proper analytics page."
+- **NEW `src/pages/ErrorsAnalyticsPage.tsx`** at route `/errors/analytics`:
+  - Range selector pills (7d / 30d / 90d / 180d / 1y / All, default 30d) matching the `TradesAnalyticsPage` pattern.
+  - Data source mirrors the Errors page filters exactly: `trade_execution_logs` (`status in failed,error`), `signals` (`status = failed`), `broker_accounts` (`connection_status = error`, bucketed on `last_synced_at`), `signal_queue_dead_letters` (`status != replayed`) — skipped rows never counted, consistent with `isFailureStatus`.
+  - Lightweight fetches (`id, <timestamp>` only, paginated 1000/page, 50k-row cap per source with a cap notice) bucketed client-side by UTC day; zero-days filled so the series is continuous from the range start to today.
+  - Stat pills: Total errors, Avg per day, Peak day, Last 7d vs prior 7d, and a Trend pill (last-7d vs previous-7d percent change; red when rising, green when falling).
+  - Charts: stacked bar per-day by source (Execution / Signal / Broker / Dead letter) with a manual legend, and a cumulative area chart of total errors over time. "By source" card with share bars.
+- **`src/pages/ErrorsPage.tsx`:** added an "Error analytics" button (BarChart3 icon) in the page header that navigates to `/errors/analytics` (`useNavigate`).
+- **`src/components/AdminShell.tsx`:** added "Errors Analytics" under the Monitoring nav group (after Errors).
+- **`src/App.tsx`:** new protected route `/errors/analytics`.
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors; 2 pre-existing `react-refresh/only-export-components` warnings), `npm run build` ✓ (pre-existing chunk-size warning only).
+- **Follow-up:** none.
+
 ### 2026-08-11 — Errors page: table paginated (50/page); summary numbers + Failure causes stay accurate over the FULL error set
 
 - **Context (user request):** after the cap removal the page loaded all ~2,002 errors at once — user: "We can paginate the errors, so that they all don't drop in at once, but total number and failure causes should be accurate". So: the table render must be paginated, but the stat cards (Errors/Transient/Major/Reviewed as major) and the Failure causes panel must keep aggregating every error matching the current filters.

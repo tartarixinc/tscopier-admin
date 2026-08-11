@@ -82,6 +82,7 @@ const navigation: NavGroup[] = [
     title: 'Monitoring',
     items: [
       { label: 'Errors', to: '/errors', icon: ShieldAlert },
+      { label: 'Errors Analytics', to: '/errors/analytics', icon: Activity },
       { label: 'Listener Events', to: '/monitoring/listener-events', icon: Activity },
       { label: 'Worker Leases', to: '/monitoring/workers', icon: Activity },
       { label: 'Copier Engine', to: '/monitoring/copier-engine', icon: Cpu },
