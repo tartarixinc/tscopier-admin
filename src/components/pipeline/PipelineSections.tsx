@@ -75,6 +75,13 @@ function plainFailureReason(log: ExecutionLogRow): string | null {
   return null;
 }
 
+function payloadSkipReason(log: ExecutionLogRow): string | null {
+  if (log.status !== 'skipped') return null;
+  const payload = log.request_payload as { skipped_reason?: unknown; skip_reason?: unknown } | null;
+  const reason = payload?.skipped_reason ?? payload?.skip_reason;
+  return typeof reason === 'string' && reason.trim() ? reason.trim().replace(/_/g, ' ') : null;
+}
+
 export function PipelineTimelineSection({ events, finalStatus }: { events: PipelineTimelineEvent[]; finalStatus?: string | null }) {
   if (events.length === 0) return null;
   return (
@@ -221,17 +228,19 @@ export function AiExplainSection({
   tradeId,
   brokerAccountId,
   report,
+  context,
 }: {
   signalId: string | null;
   tradeId?: string | null;
   brokerAccountId?: string | null;
   report?: { category?: string | null; reason?: string | null; symbol?: string | null; direction?: string | null } | null;
+  context?: string | null;
 }) {
   const [ai, setAi] = useState<{ status: 'idle' | 'loading' | 'done' | 'error'; data?: AiExplanation; message?: string }>({ status: 'idle' });
 
   async function explainWithAi() {
     if (!signalId) return;
-    const cacheKey = `${signalId}:${tradeId ?? 'signal'}:${report?.category ?? ''}:${report?.reason ?? ''}`;
+    const cacheKey = `${signalId}:${tradeId ?? 'signal'}:${report?.category ?? ''}:${report?.reason ?? ''}:${context ?? ''}`;
     const cached = aiCache.get(cacheKey);
     if (cached) {
       setAi({ status: 'done', data: cached });
@@ -244,6 +253,7 @@ export function AiExplainSection({
         trade_id: tradeId ?? undefined,
         broker_account_id: brokerAccountId ?? undefined,
         report: report ?? undefined,
+        context: context ?? undefined,
       },
     });
     if (error || !data?.explanation) {
@@ -416,12 +426,30 @@ export function ExecutionAttemptsSection({ logs, expectedTicket }: { logs: Execu
                 <span className="text-[10px] text-slate-400 font-mono ml-auto">{formatDate(log.created_at)}</span>
               </div>
               {MANAGEMENT_ACTIONS.has(log.action) && (
-                <p className="text-[11px] text-slate-500">
-                  Broker ticket for this action:{' '}
-                  {expectedTicket
-                    ? <span className="font-mono text-slate-700 dark:text-slate-200">{expectedTicket}</span>
-                    : <span className="text-error-500 font-medium">none on linked trade — this is why it fails with "unknown ticket"</span>}
-                </p>
+                log.status === 'skipped'
+                  ? (
+                    <p className="text-[11px] text-slate-500">
+                      Skipped — no broker action.{' '}
+                      {payloadSkipReason(log) && (
+                        <span className="text-slate-600 dark:text-slate-300">Reason: {payloadSkipReason(log)}.</span>
+                      )}
+                    </p>
+                  )
+                  : (() => {
+                    const payload = log.request_payload as { ticket?: unknown } | null | undefined;
+                    const ticket = expectedTicket
+                      ?? (typeof payload?.ticket === 'number' || typeof payload?.ticket === 'string'
+                        ? String(payload.ticket)
+                        : null);
+                    return (
+                      <p className="text-[11px] text-slate-500">
+                        Broker ticket for this action:{' '}
+                        {ticket
+                          ? <span className="font-mono text-slate-700 dark:text-slate-200">{ticket}</span>
+                          : <span className="text-slate-400">not recorded in this attempt&apos;s payload</span>}
+                      </p>
+                    );
+                  })()
               )}
               {log.error_message && (
                 <div className="space-y-1">
@@ -508,8 +536,8 @@ const FINAL_PATH_LABELS: Record<string, string> = {
 
 const SOURCE_BADGES: Record<string, { label: string; tone: 'emerald' | 'amber' | 'slate' | 'sky' }> = {
   deterministic: { label: 'Regex', tone: 'slate' },
-  cerebras: { label: 'Cerebras OSS', tone: 'sky' },
-  openai: { label: 'OpenAI (OSS fallback)', tone: 'sky' },
+  cerebras: { label: 'Cerebras (OpenAI OSS)', tone: 'sky' },
+  openai: { label: 'OpenAI', tone: 'sky' },
   gpt4o: { label: 'GPT-4o', tone: 'emerald' },
 };
 
@@ -687,8 +715,8 @@ export function ModelDecisionChainSection({ signal, listenerEvents }: {
   const fallbackEvtReason = fallbackEvt && typeof fallbackEvt.detail === 'object' && fallbackEvt.detail !== null
     ? (fallbackEvt.detail as { reason?: unknown }).reason
     : null;
-  const stage2FallbackNote = chain.stage2?.source === 'openai'
-    ? `Skipped stage 2 — Cerebras unavailable, fell back to OpenAI${fallbackEvtReason != null ? `: ${String(fallbackEvtReason)}` : ''}`
+  const stage2FallbackNote = fallbackEvt != null && chain.stage2?.source === 'openai'
+    ? `Cerebras request failed${fallbackEvtReason != null ? `: ${String(fallbackEvtReason)}` : ''} — stage 2 ran via the OpenAI API fallback.`
     : null;
 
   const finalPathLabel = FINAL_PATH_LABELS[chain.final.path] ?? `Path: ${chain.final.path}`;
@@ -790,6 +818,11 @@ export function AiVerificationSection({
         ? 'price_passed'
         : null;
 
+  const fallbackAiSource = fallbackDetail?.ai_source != null ? String(fallbackDetail.ai_source) : null;
+  const isOpenaiFallback = fallbackAiSource === 'openai';
+  const aiSourceRaw = reviewDetail?.ai_source ?? fallbackDetail?.ai_source ?? null;
+  const aiSourceLabel = aiSourceRaw != null ? sourceBadge(String(aiSourceRaw)).label : '—';
+
   if (!signal) return null;
 
   const pathBadge = aiKind
@@ -827,7 +860,7 @@ export function AiVerificationSection({
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
         <SummaryCell label="Signal status" value={signal.status ?? '—'} />
         <SummaryCell label="Confidence" value={aiConfidence != null ? String(aiConfidence) : hasConfidence ? String(confidence) : '—'} mono />
-        <SummaryCell label="AI source" value={String(reviewDetail?.ai_source ?? fallbackDetail?.ai_source ?? '—')} />
+        <SummaryCell label="AI source" value={aiSourceLabel} />
         <SummaryCell label="Review state" value={reviewState === 'pending' ? 'Pending' : reviewState === 'expired' ? 'Expired' : reviewState === 'price_passed' ? 'Rejected (price)' : 'None'} tone={reviewState ? (reviewState === 'pending' ? undefined : 'error') : undefined} />
       </div>
 
@@ -835,9 +868,13 @@ export function AiVerificationSection({
         <div className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300 flex items-start gap-2">
           <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />
           <div>
-            <p className="font-semibold">AI was unavailable — deterministic policy ran</p>
+            <p className="font-semibold">
+              {isOpenaiFallback
+                ? 'Cerebras request failed — stage 2 ran via the OpenAI API fallback.'
+                : 'AI was unavailable — deterministic policy ran'}
+            </p>
             <p className="mt-0.5 break-words">Reason: {String(fallbackDetail.reason)}</p>
-            {fallbackDetail.ai_intent != null && <p className="text-amber-600 dark:text-amber-400 mt-0.5">AI intent: {String(fallbackDetail.ai_intent)} · source: {String(fallbackDetail.ai_source ?? '—')}</p>}
+            {fallbackDetail.ai_intent != null && <p className="text-amber-600 dark:text-amber-400 mt-0.5">AI intent: {String(fallbackDetail.ai_intent)} · source: {fallbackAiSource != null ? sourceBadge(fallbackAiSource).label : '—'}</p>}
           </div>
         </div>
       )}

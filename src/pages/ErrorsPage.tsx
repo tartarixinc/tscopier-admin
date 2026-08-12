@@ -1,13 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { authSupabase as adminSupabase, fetchDisplayNames } from '../lib/adminSupabase';
 import { formatDate, truncate } from '../lib/formatters';
 import { UserLink } from '../components/UserLink';
+import { Pagination } from '../components/DataTable';
 import { ErrorDetailModal } from '../components/ErrorDetailModal';
 import { Select } from '../components/ui/Select';
 import { Card } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Input } from '../components/ui/Input';
-import { AlertTriangle, Search, Zap, Server, CopyX } from 'lucide-react';
+import { Button } from '../components/ui/Button';
+import { AlertTriangle, Search, Zap, Server, CopyX, BarChart3 } from 'lucide-react';
 import clsx from 'clsx';
 import {
   classifyErrorSeverity,
@@ -21,7 +24,12 @@ import {
 import { failureTitle } from '../lib/failureExplainer';
 import { applyBrokerCategory } from '../lib/brokerErrors';
 
-const PAGE_LIMIT = 300;
+const PAGE_SIZE = 50;
+
+/** Canonical cause key for grouping + filtering. Empty causes collapse to a single bucket. */
+function causeKey(cause: string | null | undefined): string {
+  return (cause ?? '').trim().toLowerCase() || '(no message)';
+}
 
 interface ExecutionRow {
   id: string;
@@ -71,14 +79,8 @@ interface DeadLetterRow {
   created_at: string;
 }
 
-interface CategoryGroup {
-  key: string;
-  label: string;
-  source: ErrorSource;
-  items: ErrorItem[];
-}
-
 export function ErrorsPage() {
+  const navigate = useNavigate();
   const [categoryFilter, setCategoryFilter] = useState('');
   const [severityFilter, setSeverityFilter] = useState('');
   const [causeFilter, setCauseFilter] = useState('');
@@ -88,151 +90,145 @@ export function ErrorsPage() {
   const [items, setItems] = useState<ErrorItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedError, setSelectedError] = useState<ErrorItem | null>(null);
+  const [page, setPage] = useState(1);
+
+  useEffect(() => { setPage(1); }, [categoryFilter, severityFilter, causeFilter, search, dateFrom, dateTo]);
+
+  const loadErrors = useCallback(async () => {
+    const from = dateFrom ? `${dateFrom}T00:00:00Z` : null;
+    const to = dateTo ? `${dateTo}T23:59:59Z` : null;
+
+    const execQ = adminSupabase
+      .from('trade_execution_logs')
+      .select('id, user_id, signal_id, broker_account_id, action, status, error_message, request_payload, response_payload, created_at')
+      .in('status', ['failed', 'error'])
+      .order('created_at', { ascending: false });
+    if (from) execQ.gte('created_at', from);
+    if (to) execQ.lte('created_at', to);
+
+    const sigQ = adminSupabase
+      .from('signals')
+      .select('id, user_id, status, skip_reason, raw_message, parsed_data, created_at')
+      .eq('status', 'failed')
+      .order('created_at', { ascending: false });
+    if (from) sigQ.gte('created_at', from);
+    if (to) sigQ.lte('created_at', to);
+
+    const brokerQ = adminSupabase
+      .from('broker_accounts')
+      .select('id, user_id, label, platform, broker_name, account_login, connection_error, fxsocket_status, terminal_connected, last_synced_at')
+      .eq('connection_status', 'error')
+      .order('last_synced_at', { ascending: false, nullsFirst: false });
+    if (from) brokerQ.gte('last_synced_at', from);
+    if (to) brokerQ.lte('last_synced_at', to);
+
+    const deadQ = adminSupabase
+      .from('signal_queue_dead_letters')
+      .select('id, user_id, signal_id, lane, attempts, reason, payload, status, created_at')
+      .neq('status', 'replayed')
+      .order('created_at', { ascending: false });
+    if (from) deadQ.gte('created_at', from);
+    if (to) deadQ.lte('created_at', to);
+
+    const [{ data: execRows }, { data: sigRows }, { data: brokerRows }, { data: deadRows }] = await Promise.all([
+      execQ, sigQ, brokerQ, deadQ,
+    ]);
+
+    const userIds = new Set<string>();
+    (execRows ?? []).forEach(r => r.user_id && userIds.add(r.user_id));
+    (sigRows ?? []).forEach(r => r.user_id && userIds.add(r.user_id));
+    (brokerRows ?? []).forEach(r => r.user_id && userIds.add(r.user_id));
+    (deadRows ?? []).forEach(r => r.user_id && userIds.add(r.user_id));
+
+    const displayNames = await fetchDisplayNames([...userIds]);
+
+    const brokerIds = [...new Set((execRows ?? []).map(r => r.broker_account_id).filter(Boolean))];
+    const brokerLabels: Record<string, string> = {};
+    if (brokerIds.length > 0) {
+      const { data: brokerLabelRows } = await adminSupabase
+        .from('broker_accounts')
+        .select('id, label')
+        .in('id', brokerIds);
+      (brokerLabelRows ?? []).forEach(b => { brokerLabels[b.id] = b.label ?? ''; });
+    }
+
+    const built: ErrorItem[] = [];
+
+    (execRows ?? []).forEach((r: ExecutionRow) => {
+      const item = executionLogToErrorItem({
+        ...r,
+        user_display_name: displayNames[r.user_id ?? ''] ?? null,
+        broker_label: brokerLabels[r.broker_account_id ?? ''] ?? null,
+      });
+      built.push({ ...item, ...applyBrokerCategory(item, item.cause) });
+    });
+
+    (sigRows ?? []).forEach((r: SignalRow) => {
+      const item = failedSignalToErrorItem({
+        ...r,
+        user_display_name: displayNames[r.user_id ?? ''] ?? null,
+      });
+      built.push({ ...item, ...applyBrokerCategory(item, item.cause) });
+    });
+
+    (brokerRows ?? []).forEach((r: BrokerRow) => {
+      const { key, label } = categoryOf('broker', null);
+      const item: ErrorItem = {
+        id: r.id,
+        source: 'broker',
+        categoryKey: key,
+        categoryLabel: label,
+        user_id: r.user_id,
+        user_display_name: displayNames[r.user_id ?? ""] ?? null,
+        trade_context: r.label ?? null,
+        cause: r.connection_error,
+        detail: {
+          label: r.label,
+          platform: r.platform,
+          broker_name: r.broker_name,
+          account_login: r.account_login,
+          fxsocket_status: r.fxsocket_status,
+          terminal_connected: r.terminal_connected,
+          last_synced_at: r.last_synced_at,
+        },
+        signal_id: null,
+        broker_account_id: r.id,
+        broker_label: r.label,
+        created_at: r.last_synced_at,
+      };
+      built.push({ ...item, ...applyBrokerCategory(item, item.cause) });
+    });
+
+    (deadRows ?? []).forEach((r: DeadLetterRow) => {
+      const { key, label } = categoryOf('dead_letter', null);
+      const item: ErrorItem = {
+        id: r.id,
+        source: 'dead_letter',
+        categoryKey: key,
+        categoryLabel: label,
+        user_id: r.user_id,
+        user_display_name: displayNames[r.user_id ?? ""] ?? null,
+        trade_context: extractTradeContext(r.payload, null) ?? (r.signal_id ? `signal ${r.signal_id.slice(0, 8)}` : null),
+        cause: r.reason,
+        detail: r.payload,
+        signal_id: r.signal_id,
+        broker_account_id: null,
+        broker_label: null,
+        attempts: r.attempts,
+        created_at: r.created_at,
+      };
+      built.push({ ...item, ...applyBrokerCategory(item, item.cause) });
+    });
+
+    setItems(built);
+    setLoading(false);
+  }, [dateFrom, dateTo]);
 
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-
-    (async () => {
-      const from = dateFrom ? `${dateFrom}T00:00:00Z` : null;
-      const to = dateTo ? `${dateTo}T23:59:59Z` : null;
-
-      const execQ = adminSupabase
-        .from('trade_execution_logs')
-        .select('id, user_id, signal_id, broker_account_id, action, status, error_message, request_payload, response_payload, created_at')
-        .in('status', ['failed', 'error'])
-        .order('created_at', { ascending: false })
-        .limit(PAGE_LIMIT);
-      if (from) execQ.gte('created_at', from);
-      if (to) execQ.lte('created_at', to);
-
-      const sigQ = adminSupabase
-        .from('signals')
-        .select('id, user_id, status, skip_reason, raw_message, parsed_data, created_at')
-        .eq('status', 'failed')
-        .order('created_at', { ascending: false })
-        .limit(PAGE_LIMIT);
-      if (from) sigQ.gte('created_at', from);
-      if (to) sigQ.lte('created_at', to);
-
-      const brokerQ = adminSupabase
-        .from('broker_accounts')
-        .select('id, user_id, label, platform, broker_name, account_login, connection_error, fxsocket_status, terminal_connected, last_synced_at')
-        .eq('connection_status', 'error')
-        .order('last_synced_at', { ascending: false, nullsFirst: false })
-        .limit(PAGE_LIMIT);
-      if (from) brokerQ.gte('last_synced_at', from);
-      if (to) brokerQ.lte('last_synced_at', to);
-
-      const deadQ = adminSupabase
-        .from('signal_queue_dead_letters')
-        .select('id, user_id, signal_id, lane, attempts, reason, payload, status, created_at')
-        .neq('status', 'replayed')
-        .order('created_at', { ascending: false })
-        .limit(PAGE_LIMIT);
-      if (from) deadQ.gte('created_at', from);
-      if (to) deadQ.lte('created_at', to);
-
-      const [{ data: execRows }, { data: sigRows }, { data: brokerRows }, { data: deadRows }] = await Promise.all([
-        execQ, sigQ, brokerQ, deadQ,
-      ]);
-
-      if (cancelled) return;
-
-      const userIds = new Set<string>();
-      (execRows ?? []).forEach(r => r.user_id && userIds.add(r.user_id));
-      (sigRows ?? []).forEach(r => r.user_id && userIds.add(r.user_id));
-      (brokerRows ?? []).forEach(r => r.user_id && userIds.add(r.user_id));
-      (deadRows ?? []).forEach(r => r.user_id && userIds.add(r.user_id));
-
-      const displayNames = await fetchDisplayNames([...userIds]);
-
-      const brokerIds = [...new Set((execRows ?? []).map(r => r.broker_account_id).filter(Boolean))];
-      const brokerLabels: Record<string, string> = {};
-      if (brokerIds.length > 0) {
-        const { data: brokerLabelRows } = await adminSupabase
-          .from('broker_accounts')
-          .select('id, label')
-          .in('id', brokerIds);
-        (brokerLabelRows ?? []).forEach(b => { brokerLabels[b.id] = b.label ?? ''; });
-      }
-
-      if (cancelled) return;
-
-      const built: ErrorItem[] = [];
-
-      (execRows ?? []).forEach((r: ExecutionRow) => {
-        const item = executionLogToErrorItem({
-          ...r,
-          user_display_name: displayNames[r.user_id ?? ''] ?? null,
-          broker_label: brokerLabels[r.broker_account_id ?? ''] ?? null,
-        });
-        built.push({ ...item, ...applyBrokerCategory(item, item.cause) });
-      });
-
-      (sigRows ?? []).forEach((r: SignalRow) => {
-        const item = failedSignalToErrorItem({
-          ...r,
-          user_display_name: displayNames[r.user_id ?? ''] ?? null,
-        });
-        built.push({ ...item, ...applyBrokerCategory(item, item.cause) });
-      });
-
-      (brokerRows ?? []).forEach((r: BrokerRow) => {
-        const { key, label } = categoryOf('broker', null);
-        const item: ErrorItem = {
-          id: r.id,
-          source: 'broker',
-          categoryKey: key,
-          categoryLabel: label,
-          user_id: r.user_id,
-          user_display_name: displayNames[r.user_id ?? ""] ?? null,
-          trade_context: r.label ?? null,
-          cause: r.connection_error,
-          detail: {
-            label: r.label,
-            platform: r.platform,
-            broker_name: r.broker_name,
-            account_login: r.account_login,
-            fxsocket_status: r.fxsocket_status,
-            terminal_connected: r.terminal_connected,
-            last_synced_at: r.last_synced_at,
-          },
-          signal_id: null,
-          broker_account_id: r.id,
-          broker_label: r.label,
-          created_at: r.last_synced_at,
-        };
-        built.push({ ...item, ...applyBrokerCategory(item, item.cause) });
-      });
-
-      (deadRows ?? []).forEach((r: DeadLetterRow) => {
-        const { key, label } = categoryOf('dead_letter', null);
-        const item: ErrorItem = {
-          id: r.id,
-          source: 'dead_letter',
-          categoryKey: key,
-          categoryLabel: label,
-          user_id: r.user_id,
-          user_display_name: displayNames[r.user_id ?? ""] ?? null,
-          trade_context: extractTradeContext(r.payload, null) ?? (r.signal_id ? `signal ${r.signal_id.slice(0, 8)}` : null),
-          cause: r.reason,
-          detail: r.payload,
-          signal_id: r.signal_id,
-          broker_account_id: null,
-          broker_label: null,
-          attempts: r.attempts,
-          created_at: r.created_at,
-        };
-        built.push({ ...item, ...applyBrokerCategory(item, item.cause) });
-      });
-
-      setItems(built);
-      setLoading(false);
-    })();
-
-    return () => { cancelled = true; };
-  }, [dateFrom, dateTo]);
+    loadErrors();
+    const timer = window.setInterval(() => { loadErrors(); }, 20_000);
+    return () => window.clearInterval(timer);
+  }, [loadErrors]);
 
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -242,7 +238,7 @@ export function ErrorsPage() {
         const sev = classifyErrorSeverity(item.cause).severity;
         if (sev !== severityFilter) return false;
       }
-      if (causeFilter && (item.cause ?? '').toLowerCase() !== causeFilter) return false;
+      if (causeFilter && causeKey(item.cause) !== causeFilter) return false;
       if (term) {
         const user = item.user_display_name?.toLowerCase() ?? '';
         const userId = item.user_id?.toLowerCase() ?? '';
@@ -255,40 +251,47 @@ export function ErrorsPage() {
   }, [items, categoryFilter, severityFilter, causeFilter, search]);
 
   const causeBreakdown = useMemo(() => {
-    const byCause = new Map<string, { count: number; transient: number; major: number }>();
+    const byCause = new Map<string, { cause: string; count: number; transient: number; major: number; sources: Set<ErrorSource> }>();
     filtered.forEach(item => {
-      const c = (item.cause ?? '').trim() || '(no message)';
-      const entry = byCause.get(c) ?? { count: 0, transient: 0, major: 0 };
+      const key = causeKey(item.cause);
+      const entry = byCause.get(key) ?? {
+        cause: (item.cause ?? '').trim() || '(no message)',
+        count: 0,
+        transient: 0,
+        major: 0,
+        sources: new Set<ErrorSource>(),
+      };
       entry.count += 1;
+      entry.sources.add(item.source);
       if (classifyErrorSeverity(item.cause).severity === 'transient') entry.transient += 1;
       else entry.major += 1;
-      byCause.set(c, entry);
+      byCause.set(key, entry);
     });
     return [...byCause.entries()]
-      .map(([cause, v]) => ({ cause, ...v, title: failureTitle(cause, 'signal') ?? null }))
+      .map(([key, v]) => {
+        let title: string | null = null;
+        for (const source of v.sources) {
+          title = failureTitle(v.cause, source);
+          if (title) break;
+        }
+        return { ...v, key, title };
+      })
       .sort((a, b) => b.count - a.count);
   }, [filtered]);
 
-  const { categories, totals } = useMemo(() => {
-    const byKey = new Map<string, CategoryGroup>();
-    filtered.forEach(item => {
-      let group = byKey.get(item.categoryKey);
-      if (!group) {
-        group = { key: item.categoryKey, label: item.categoryLabel, source: item.source, items: [] };
-        byKey.set(item.categoryKey, group);
-      }
-      group.items.push(item);
-    });
-
-    const categories = [...byKey.values()]
-      .sort((a, b) => b.items.length - a.items.length)
-      .map(g => ({ ...g, items: g.items.sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime()) }));
-
+  const totals = useMemo(() => {
     const transient = filtered.filter(i => classifyErrorSeverity(i.cause).severity === 'transient').length;
     const major = filtered.filter(i => classifyErrorSeverity(i.cause).severity === 'major').length;
-
-    return { categories, totals: { total: filtered.length, transient, major } };
+    const categoryCount = new Set(filtered.map(i => i.categoryKey)).size;
+    return { total: filtered.length, transient, major, categoryCount };
   }, [filtered]);
+
+  const sorted = useMemo(
+    () => [...filtered].sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime()),
+    [filtered],
+  );
+
+  const paged = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   const allCategories = useMemo(() => {
     const seen = new Map<string, string>();
@@ -305,16 +308,22 @@ export function ErrorsPage() {
 
   return (
     <div className="space-y-4 animate-fade-in">
-      <div className="page-header">
-        <h1 className="page-title">Errors</h1>
-        <p className="page-subtitle">Failed executions, failed signals, broker connection errors and dead letters</p>
+      <div className="flex flex-col sm:flex-row items-start justify-between gap-3">
+        <div className="page-header mb-0">
+          <h1 className="page-title">Errors</h1>
+          <p className="page-subtitle">Failed executions, failed signals, broker connection errors and dead letters</p>
+        </div>
+        <Button variant="secondary" size="sm" onClick={() => navigate('/errors/analytics')}>
+          <BarChart3 className="w-3.5 h-3.5" />
+          Error analytics
+        </Button>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="stat-card">
           <p className="stat-label">Errors</p>
           <p className="stat-value text-2xl">{totals.total.toLocaleString()}</p>
-          <p className="text-xs text-slate-400 mt-0.5">{categories.length} category{categories.length !== 1 ? 'ies' : 'y'}</p>
+          <p className="text-xs text-slate-400 mt-0.5">{totals.categoryCount} categor{totals.categoryCount !== 1 ? 'ies' : 'y'}</p>
         </div>
         <div className="stat-card">
           <p className="stat-label">Transient</p>
@@ -329,7 +338,7 @@ export function ErrorsPage() {
         <div className="stat-card">
           <p className="stat-label">Reviewed as major</p>
           <p className="stat-value text-2xl text-slate-900 dark:text-slate-100">{Math.round((totals.major / Math.max(1, totals.total)) * 100)}%</p>
-          <p className="text-xs text-slate-400 mt-0.5">of the visible errors</p>
+          <p className="text-xs text-slate-400 mt-0.5">of all errors</p>
         </div>
       </div>
 
@@ -356,12 +365,12 @@ export function ErrorsPage() {
           <div className="divide-y divide-slate-100 dark:divide-slate-700/60">
             {causeBreakdown.slice(0, 15).map(c => {
               const pct = Math.round((c.count / Math.max(1, totals.total)) * 100);
-              const active = causeFilter === c.cause;
+              const active = causeFilter === c.key;
               return (
                 <button
-                  key={c.cause}
+                  key={c.key}
                   type="button"
-                  onClick={() => setCauseFilter(active ? '' : c.cause)}
+                  onClick={() => setCauseFilter(active ? '' : c.key)}
                   className={clsx(
                     'w-full text-left px-4 py-2.5 flex items-center gap-4 transition-colors',
                     active ? 'bg-primary-50 dark:bg-primary-900/30' : 'hover:bg-slate-50 dark:hover:bg-slate-700/40'
@@ -422,103 +431,65 @@ export function ErrorsPage() {
             {Array.from({ length: 5 }).map((_, i) => <div key={i} className="h-12 rounded skeleton" />)}
           </div>
         </Card>
-      ) : categories.length === 0 ? (
+      ) : sorted.length === 0 ? (
         <Card>
           <p className="text-sm text-slate-400 text-center py-16">No errors match the current filters.</p>
         </Card>
       ) : (
-        categories.map(group => {
-          const transientCount = group.items.filter(i => classifyErrorSeverity(i.cause).severity === 'transient').length;
-          const majorCount = group.items.length - transientCount;
-          const groupCauses = new Map<string, number>();
-          group.items.forEach(i => {
-            const c = (i.cause ?? '').trim() || '(no message)';
-            groupCauses.set(c, (groupCauses.get(c) ?? 0) + 1);
-          });
-          return (
-            <Card key={group.key}>
-              <div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-3 pb-2 border-b border-slate-100 dark:border-slate-700">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-primary-500">{sourceIcon(group.source)}</span>
-                  <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 truncate">{group.label}</h3>
-                  <Badge variant="error">{group.items.length}</Badge>
-                </div>
-                <div className="flex items-center gap-2 text-[10px] text-slate-400">
-                  <Badge variant="warning">{transientCount} transient</Badge>
-                  <Badge variant="error">{majorCount} major</Badge>
-                </div>
-              </div>
-              {groupCauses.size > 1 && (
-                <div className="flex flex-wrap gap-1.5 px-4 py-2 border-b border-slate-100 dark:border-slate-700">
-                  {[...groupCauses.entries()]
-                    .sort((a, b) => b[1] - a[1])
-                    .map(([cause, count]) => {
-                      const active = causeFilter === cause;
-                      return (
-                        <button
-                          key={cause}
-                          type="button"
-                          onClick={() => setCauseFilter(active ? '' : cause)}
-                          className={clsx(
-                            'text-[10px] font-medium px-2 py-1 rounded-full border transition-colors',
-                            active
-                              ? 'border-primary-400 bg-primary-50 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300'
-                              : 'border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
+        <Card>
+          <div className="overflow-x-auto">
+            <table className="table-base">
+              <thead>
+                <tr>
+                  <th>Category</th>
+                  <th>User</th>
+                  <th>Trade</th>
+                  <th>Cause</th>
+                  <th>Severity</th>
+                  <th>Created</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paged.map(item => {
+                  const severity = classifyErrorSeverity(item.cause).severity;
+                  return (
+                    <tr key={item.id} onClick={() => setSelectedError(item)} className="cursor-pointer">
+                      <td>
+                        <span className="flex items-center gap-1.5 text-xs text-slate-500">
+                          <span className="text-primary-500">{sourceIcon(item.source)}</span>
+                          {item.categoryLabel}
+                        </span>
+                      </td>
+                      <td>
+                        {item.user_id
+                          ? <UserLink userId={item.user_id} displayName={item.user_display_name} />
+                          : <span className="text-slate-400 text-xs">—</span>}
+                      </td>
+                      <td><span className="font-mono text-xs text-slate-500">{item.trade_context ?? '—'}</span></td>
+                      <td>
+                        <div className="max-w-xs">
+                          {failureTitle(item.cause, item.source) && (
+                            <p className="text-xs text-slate-700 dark:text-slate-200 truncate">{failureTitle(item.cause, item.source)}</p>
                           )}
-                        >
-                          {cause} · {count}
-                        </button>
-                      );
-                    })}
-                </div>
-              )}
-              <div className="overflow-x-auto">
-                <table className="table-base">
-                  <thead>
-                    <tr>
-                      <th>User</th>
-                      <th>Trade</th>
-                      <th>Cause</th>
-                      <th>Severity</th>
-                      <th>Created</th>
+                          <p className="text-[10px] text-slate-400 font-mono truncate" title={item.cause ?? ''}>
+                            {truncate(item.cause ?? '(no message)', 60)}
+                          </p>
+                        </div>
+                      </td>
+                      <td>
+                        {severity === 'transient'
+                          ? <Badge variant="warning" dot>Transient</Badge>
+                          : <Badge variant="error" dot>Major</Badge>}
+                      </td>
+                      <td><span className="text-xs text-slate-400">{formatDate(item.created_at)}</span></td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {group.items.map(item => {
-                      const severity = classifyErrorSeverity(item.cause).severity;
-                      return (
-                        <tr key={item.id} onClick={() => setSelectedError(item)} className="cursor-pointer">
-                          <td>
-                            {item.user_id
-                              ? <UserLink userId={item.user_id} displayName={item.user_display_name} />
-                              : <span className="text-slate-400 text-xs">—</span>}
-                          </td>
-                          <td><span className="font-mono text-xs text-slate-500">{item.trade_context ?? '—'}</span></td>
-                          <td>
-                            <div className="max-w-xs">
-                              {failureTitle(item.cause, item.source) && (
-                                <p className="text-xs text-slate-700 dark:text-slate-200 truncate">{failureTitle(item.cause, item.source)}</p>
-                              )}
-                              <p className="text-[10px] text-slate-400 font-mono truncate" title={item.cause ?? ''}>
-                                {truncate(item.cause ?? '(no message)', 60)}
-                              </p>
-                            </div>
-                          </td>
-                          <td>
-                            {severity === 'transient'
-                              ? <Badge variant="warning" dot>Transient</Badge>
-                              : <Badge variant="error" dot>Major</Badge>}
-                          </td>
-                          <td><span className="text-xs text-slate-400">{formatDate(item.created_at)}</span></td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-          );
-        })
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <Pagination page={page} totalPages={Math.max(1, Math.ceil(sorted.length / PAGE_SIZE))} totalCount={sorted.length} pageSize={PAGE_SIZE} onPageChange={setPage} />
+        </Card>
       )}
 
       {selectedError && (

@@ -136,6 +136,7 @@ async function explainSignal(
   focusedTradeId: string | null,
   focusedBrokerAccountId: string | null,
   report: { category?: string | null; reason?: string | null; symbol?: string | null; direction?: string | null } | null,
+  context: string | null,
 ): Promise<Response> {
   const [{ data: signal }, { data: trades }, { data: logs }, { data: logStatuses }] = await Promise.all([
     supabase.from("signals").select("id, user_id, raw_message, parsed_data, status, skip_reason, pipeline_ts, channel_signal_id, channel_id, telegram_message_id, parent_signal_id, is_modification, created_at, telegram_channels(display_name, signal_channel_id)").eq("id", signalId).maybeSingle(),
@@ -261,8 +262,12 @@ async function explainSignal(
   const systemPrompt = [
     "You are the analyst for TScopier, a Telegram trade-signal copier.",
     "You receive the COMPLETE record for a signal and one of its trades. Explain what happened in plain English for an administrator.",
+    context
+      ? `CONTEXT — WHERE THIS EXPLANATION IS SHOWN AND WHAT TO PRIORITIZE: ${context}`
+      : null,
     "Rules:",
-    "- summary: the direct answer in 2-4 short sentences — did the selected trade execute, was protection (SL/TP) broker-confirmed, and was anything anomalous.",
+    "- ALWAYS read the Raw message (the original Telegram text) and the Parsed data first. They are the ground truth for what the signal actually said. Quote exact lines from the raw message when they matter (e.g. the SL/TP/entry/direction/lots the channel broadcast).",
+    "- summary: a thorough answer (4-8 sentences, not a one-liner). When a USER REPORT is present, lead with a clear verdict on the complaint (VALID / PARTIALLY VALID / NOT VALID / CANNOT VERIFY), then the supporting evidence. When no report is present, answer: did the selected trade execute, was protection (SL/TP) broker-confirmed, and was anything anomalous.",
     "- details: an exhaustive point-by-point breakdown. Cover each of the following when data is present:",
     "  1. Model decision chain — deterministic regex, OSS (Cerebras/OpenAI), GPT-4o reconciliation, final outcome and per-stage durations.",
     "  2. Parse path — who parsed the message, confidence, validation failures, skip reasons.",
@@ -277,9 +282,15 @@ async function explainSignal(
     "- If early attempts failed but later ones succeeded, describe the outcome timeline — do not conclude the signal failed overall.",
     "- If the signal was SKIPPED, lead with the skip reason and explain why the trade was not taken.",
     "- If ALL attempts failed, explain exactly which stage failed, the error, and its likely cause.",
-    "- If a USER REPORT is provided, it is the PRIMARY question: read the original Telegram signal text and the actual trade, then judge whether the complaint is valid (e.g. report says 'No SL' → is stoploss 0 or not broker-confirmed? signal says SL should exist → did the copier miss it?). Lead the summary with the verdict on the report, then support it with evidence.",
+    "- If a USER REPORT is provided, it is the PRIMARY question. Do ALL of the following:",
+    "    1. Read the Raw message line by line. Extract what the channel declared for entry, SL, TP, direction, and lots. Quote the exact lines.",
+    "    2. Compare the declaration against the Parsed data and against the actual trade values (entry_price, sl, tp, direction, lot_size).",
+    "    3. Judge each reported claim (category + reason) specifically: e.g. 'wrong stop loss' → what did the signal say vs what stoploss was sent to the broker (treat 0 as NOT SENT) vs what is on the trade row. Same method for wrong entry / wrong tp / wrong direction / wrong lots / not executed.",
+    "    4. If the complaint is about execution ('not executed'), trace the execution attempts and management logs for the ticket and say which stage failed and why.",
+    "    5. Lead the summary with the verdict on each claim, then support it with quoted signal text and concrete numbers.",
     "- If timestamps are missing or a stage is absent, say what cannot be determined.",
     "- Use short sentences and ordinary words. Avoid pipeline jargon (dispatch, claim, persistence, reconciliation) unless you immediately explain it.",
+    "- Be specific with numbers and quoted text. Do not give generic answers. If the raw message and the trade disagree, that disagreement is the story — spell it out.",
     "Reply with strict JSON: {\"summary\": string, \"anomalies\": string[], \"overall\": \"fast\"|\"normal\"|\"slow\", \"details\": string[]}.",
   ].join("\n")
 
@@ -295,7 +306,7 @@ async function explainSignal(
     `Channel: ${channelName ?? "(unknown)"}`,
     `Signal skip reason: ${signal.skip_reason ?? "(none)"}`,
     `Canonical channel signal skip reason: ${channelSkipReason ?? "(none)"}`,
-    `Raw message: ${full(signal.raw_message)}`,
+    `Raw message (THE TELEGRAM SIGNAL — read this FIRST, quote it): ${full(signal.raw_message)}`,
     `Parsed data (full): ${full(signal.parsed_data)}`,
     `Stored AI intent (_intent): ${full(storedIntent)}`,
     `Model decision chain (_verification): ${full(verification)}`,
@@ -421,6 +432,7 @@ Deno.serve(async (req: Request) => {
     const focusedTradeId = typeof body?.trade_id === "string" ? body.trade_id : null
     const focusedBrokerAccountId = typeof body?.broker_account_id === "string" ? body.broker_account_id : null
     const logId = typeof body?.log_id === "string" ? body.log_id : null
+    const context = typeof body?.context === "string" && body.context.trim() ? body.context.trim() : null
 
     let report: { category?: string | null; reason?: string | null; symbol?: string | null; direction?: string | null } | null = null
     if (body?.report && typeof body.report === "object") {
@@ -436,7 +448,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (logId) return await explainLog(supabase, logId)
-    if (signalId) return await explainSignal(supabase, signalId, focusedTradeId, focusedBrokerAccountId, report)
+    if (signalId) return await explainSignal(supabase, signalId, focusedTradeId, focusedBrokerAccountId, report, context)
     return json({ error: "signal_id or log_id is required" }, 400)
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500)

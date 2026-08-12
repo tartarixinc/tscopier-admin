@@ -2,7 +2,116 @@
 
 ## Changelog
 
-### 2026-08-10 — Report detail modal AI analysis now answers the report complaint (reads the Telegram signal too)
+### 2026-08-11 — Model decision chain: truthful Cerebras labels + fallback notes gated on evidence (admin display fix)
+
+- **Context (user report):** an Aug 11 signal showed `source: 'openai'` in the Model decision chain and a note claiming `Skipped stage 2 — Cerebras unavailable, fell back to OpenAI` even though no `ai_parse_fallback` event existed. Investigation with the main-repo worker debug endpoint (`POST <listener>/internal/parse-ai-debug`, token from user) against prod `https://tscopier-listener-production.up.railway.app` proved **Cerebras is working** on prod right now — both a modify and an entry test message went through stage 2 with `source: "cerebras"` (~700–950 ms, `mode: "fastpath"`), no fallback. The old signal's `openai` source means it was parsed while Cerebras wasn't running (pre-fix build or an outage window); that state is no longer reproducible. So no Railway/env changes were needed — only the admin display was lying to the user.
+- **`src/components/pipeline/PipelineSections.tsx`:**
+  - `SOURCE_BADGES`: `cerebras` → **"Cerebras (OpenAI OSS)"**, `openai` → **"OpenAI"** (was "OpenAI (OSS fallback)"), `gpt4o` unchanged. The "OSS fallback" claim is no longer attached to the plain OpenAI badge.
+  - `stage2FallbackNote` (Model decision chain): now rendered **only when an `ai_parse_fallback` event actually exists** AND `chain.stage2.source === 'openai'`; reworded to `Cerebras request failed[: <reason>] — stage 2 ran via the OpenAI API fallback.` A bare `openai` source with no event now shows just the "OpenAI" badge with no note (no more invented "Skipped stage 2 — Cerebras unavailable").
+  - `AiVerificationSection`: "AI source" summary cell now maps the raw value through `sourceBadge` (so `cerebras`/`openai` show friendly labels, not raw strings). The fallback alert box title now says "Cerebras request failed — stage 2 ran via the OpenAI API fallback." when the event's `ai_source` is `openai` (was always "AI was unavailable — deterministic policy ran", which contradicted the recorded `ai_source: openai`); the generic deterministic-policy wording is kept only for fallback events without an OpenAI source.
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors; 2 pre-existing `react-refresh/only-export-components` warnings), `npm run build` ✓ (pre-existing chunk-size warning only).
+- **Follow-up:** none required. (Optional, for certainty on the old signal only: compare its `created_at` to the Railway deploy timestamp of the Cerebras fix — nothing actionable either way.)
+
+### 2026-08-11 — Error Analytics page: rise/fall of errors over time, with an Analytics button on the Errors page
+
+- **Context (user request):** "Add a button on this page for analytics that we can use to see the rise and falls of total errors, make it a proper analytics page."
+- **NEW `src/pages/ErrorsAnalyticsPage.tsx`** at route `/errors/analytics`:
+  - Range selector pills (7d / 30d / 90d / 180d / 1y / All, default 30d) matching the `TradesAnalyticsPage` pattern.
+  - Data source mirrors the Errors page filters exactly: `trade_execution_logs` (`status in failed,error`), `signals` (`status = failed`), `broker_accounts` (`connection_status = error`, bucketed on `last_synced_at`), `signal_queue_dead_letters` (`status != replayed`) — skipped rows never counted, consistent with `isFailureStatus`.
+  - Lightweight fetches (`id, <timestamp>` only, paginated 1000/page, 50k-row cap per source with a cap notice) bucketed client-side by UTC day; zero-days filled so the series is continuous from the range start to today.
+  - Stat pills: Total errors, Avg per day, Peak day, Last 7d vs prior 7d, and a Trend pill (last-7d vs previous-7d percent change; red when rising, green when falling).
+  - Charts: stacked bar per-day by source (Execution / Signal / Broker / Dead letter) with a manual legend, and a cumulative area chart of total errors over time. "By source" card with share bars.
+- **`src/pages/ErrorsPage.tsx`:** added an "Error analytics" button (BarChart3 icon) in the page header that navigates to `/errors/analytics` (`useNavigate`).
+- **`src/components/AdminShell.tsx`:** added "Errors Analytics" under the Monitoring nav group (after Errors).
+- **`src/App.tsx`:** new protected route `/errors/analytics`.
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors; 2 pre-existing `react-refresh/only-export-components` warnings), `npm run build` ✓ (pre-existing chunk-size warning only).
+- **Follow-up:** none.
+
+### 2026-08-11 — Errors page: table paginated (50/page); summary numbers + Failure causes stay accurate over the FULL error set
+
+- **Context (user request):** after the cap removal the page loaded all ~2,002 errors at once — user: "We can paginate the errors, so that they all don't drop in at once, but total number and failure causes should be accurate". So: the table render must be paginated, but the stat cards (Errors/Transient/Major/Reviewed as major) and the Failure causes panel must keep aggregating every error matching the current filters.
+- **Design:** data loading is unchanged — all four source queries still fetch the full date-filtered set (exec `status in failed/error`, signals `status=failed`, broker `connection_status=error`, dead letters `status != replayed`). Only the `<table>` render is paginated client-side, so the summary + cause buckets (derived from the full `filtered` memo) remain exact.
+- **`src/pages/ErrorsPage.tsx`:**
+  - `const PAGE_SIZE = 50`; new `page` state; `useEffect` resets `page` to 1 whenever `categoryFilter`/`severityFilter`/`causeFilter`/`search`/`dateFrom`/`dateTo` change (matches the pattern in ReportsPage/SignalsPage/etc.).
+  - `paged = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)`; table maps over `paged` instead of `sorted`.
+  - Added the shared `<Pagination>` component (from `components/DataTable.tsx`, same one used by every list page) under the table with `totalCount={sorted.length}` and `onPageChange={setPage}`. The 20s poll updates `items` without resetting `page` (filters unchanged), so the user's page position persists across refreshes.
+  - **Unchanged:** `totals`, `causeBreakdown`, and `categoryCount` all still derive from the full `filtered` set — totals are accurate regardless of the current page.
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors; 2 pre-existing `react-refresh/only-export-components` warnings), `npm run build` ✓ (pre-existing chunk-size warning only).
+- **Follow-up:** none.
+
+### 2026-08-11 — Errors page: Failure-causes titles restored + summary numbers now aggregate ALL errors (PAGE_LIMIT cap removed)
+
+- **Context (user report):** (1) the big bold titles in the "Failure causes" panel had disappeared — only "No position opened" (`entry_not_opened`) and "Broker rejected stop levels" (`invalid_stops`) still had one; (2) the summary numbers were pinned at Errors 602 even as new errors came in. User: the page "is supposed to aggregate all". Explicit instruction: NO reverting — diagnose via `git diff` and reapply, do not revert uncommitted work.
+- **Title bug root cause:** `causeBreakdown` (ErrorsPage.tsx) called `failureTitle(cause, 'signal')` unconditionally. The working-tree `explainFailure` (from the `no_tp_ladder` change above) intentionally returns `null` for `source === 'signal'` unless the cause normalizes to a skip-reason key (`SKIP_REASON_EXPLANATIONS`) — broker-style causes (`unknown ticket`, `Not enough money`, `Market closed`, `HTTP 5xx`, `Symbol not found`) only resolve through the execution/dead-letter path (`explainBrokerError`). So only `invalid_stops` + `entry_not_opened` (which ARE skip keys) kept titles. The committed version fell through to `explainBrokerError` for all sources, which is why it worked before.
+- **`src/pages/ErrorsPage.tsx` (`causeBreakdown`):** each cause bucket now tracks the distinct `sources: Set<ErrorSource>` it appears in; the title is the first non-null `failureTitle(cause, source)` tried across that bucket's sources. Broker causes now resolve via `explainBrokerError`, skip-reason causes via `SKIP_REASON_EXPLANATIONS`. Row-level titles in the table were already source-aware (`failureTitle(item.cause, item.source)`) and were never broken.
+- **Pinned-numbers root cause:** every source query capped at `PAGE_LIMIT = 300` rows, and ALL four stat cards derived from `filtered` (the capped window). As new errors streamed in, old ones rotated out of the 300-window, so the total hovered at ~602 regardless of growth. The page already renders every filtered row with no pagination, so the cap only ever hid data from the stats.
+- **`src/pages/ErrorsPage.tsx` (fetch):** removed `const PAGE_LIMIT = 300` and the four `.limit(PAGE_LIMIT)` calls (exec `status in failed/error`, signals `status=failed`, broker `connection_status=error`, dead letters `status != replayed`). Same date filters still apply. Summary cards now aggregate the complete matching set; the "Reviewed as major" card subtitle now reads "of all errors" instead of "of the visible errors". Note: skipped rows still never reach this page because `isFailureStatus` only accepts `failed`/`error` (unchanged).
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors; 2 pre-existing `react-refresh/only-export-components` warnings in ReportDetailModal/PipelineSections), `npm run build` ✓ (pre-existing chunk-size warning only).
+- **Follow-up:** none required. If the error volume grows to tens of thousands of rows, revisit with real count queries or table pagination (the 20s poll refetches the full matching set).
+
+### 2026-08-11 — `range_basket_tp_rebalance` skip now explained in admin (worker emits `status='skipped'` + `skipped_reason='no_tp_ladder'`); pipeline shows skip reason, Errors pages won't list skips as Major
+
+- **Context (main repo investigation, signal `e2fbd5c5`, XAUUSD "Gold Buy Now!", Luis ESp):** admin showed `range_basket_tp_rebalance` as **Major / "unknown ticket"** with `{phase:"layering_rebalance", failed:1, attempted:1, modified:0, open_legs:13, target_tp_counts:{}}`. Root cause (worker, in `~/projects/TSCopier`, NOT this repo): the skip branch in `rangeBasketTpSync.ts:735-752` logged the "no TP ladder" skip as `status:'failed'` (`attempted:1, failed:1`) with no reason. It was a correct skip, not a failure — the basket rebalance simply had no TP ladder to redistribute (signal `tp:[]`, no channel TP memory newer than basket open, single-TP-across-many-legs guard rejects). No broker call happened; the fired leg opened with stops.
+- **Worker change (main repo, done + tested, not yet committed/pushed):** skip branch now logs `attempted:0, failed:0, skippedReason:'no_tp_ladder'`; new exported `rangeBasketTpRebalanceStatus()` maps `skippedReason → 'skipped'`, else `modified>0 || attempted===0 ? 'success' : 'failed'`.
+- **THIS repo — `src/lib/failureExplainer.ts`:**
+  - Added `no_tp_ladder` to `SKIP_REASON_EXPLANATIONS` ("No take-profit ladder to redistribute — skipped, not failed; nothing modified on the broker").
+  - Generalized `explainFailure(cause, source)`: execution/dead-letter rows now fall back to `SKIP_REASON_EXPLANATIONS[normalizeKey(cause)]` when the broker-error matchers return null (previously only `source==='signal'` looked those up). This matters because `executionLogToErrorItem` derives `cause` from `request_payload.skipped_reason` when `error_message` is null, so the modal/ErrorsPage title now resolves for `no_tp_ladder` rows.
+- **THIS repo — `src/components/pipeline/PipelineSections.tsx`:**
+  - Added `payloadSkipReason(log)` helper (reads `request_payload.skipped_reason ?? skip_reason` when `status==='skipped'`).
+  - `ExecutionAttemptsSection` (line ~421): for `MANAGEMENT_ACTIONS` rows that are `skipped`, it now shows `Skipped — no broker action. Reason: <reason>.` instead of the misleading `Broker ticket for this action: none on linked trade — this is why it fails with "unknown ticket"` (that ticket line is now only shown for non-skipped rows).
+- **Deliberately NOT changed:** `src/lib/errors.ts` `classifyErrorSeverity` — new `skipped` rows never reach the Errors pages because `isFailureStatus` only accepts `failed`/`error`. A skip will not show as Major. Historical pre-change `failed` rows (24 for this action) remain as-is in the DB.
+- **Verification status:** NOT yet verified in this repo — `npm run typecheck` / `npm run lint` pending (handing off to another agent). Worker + frontend tests pass in the main repo (`rangeBasketTpSync.test.ts` 32/32, `channelWorkerLogMessage.test.ts` 27/27).
+- **Handoff note for the agent taking over:** the admin working tree already contains OTHER uncommitted changes NOT from this task (`src/components/ErrorDetailModal.tsx`, `ReportDetailModal.tsx`, `SignalDetailModal.tsx`, `TradePipelineModal.tsx`, `SignalPipelineBody.tsx`, `src/lib/errors.ts`, `src/pages/ErrorsPage.tsx`, `supabase/functions/trade-pipeline-explainer/index.ts`, plus this repo's `docs/PROJECT_MEMORY.md`). Do not bundle them with this change.
+- **Follow-up:** typecheck + lint this repo; deploy admin after the main-repo worker change ships (skipped rows only exist once the new worker emits them).
+
+### 2026-08-11 — Errors page: one aggregated list instead of per-category cards; Failure causes panel kept
+
+- **Context (user request):** user saw the page split into multiple category cards, each with its own table, so the newest error differed depending on which card/filter was viewed. User: "THERE ARE DIFFERENT LIST CATEGORIES... WE SHOULD HAVE ONE AGGREGATED LIST, THEN THE FILTERS SHOW ONLY THE TRADES NEEDED." They explicitly asked to KEEP the "Failure causes" panel ("I STILL WANT THIS KEPT OH, THIS IS VERY USEFUL").
+- **`src/pages/ErrorsPage.tsx`:**
+  - Removed the `CategoryGroup` interface and `newestItemTimestamp()` helper (no longer needed).
+  - Replaced the `{ categories, totals }` memo with a `totals` memo (adds `categoryCount` from distinct category keys across filtered items) plus a `sorted` memo (all filtered items, newest-first by `created_at`).
+  - Stat card now uses `totals.categoryCount` instead of `categories.length`.
+  - Replaced the per-category `<Card>` loop with a single aggregated `<table>`: adds a `Category` column (source icon + `categoryLabel`), then User / Trade / Cause / Severity / Created. Row click still opens `ErrorDetailModal`.
+  - **Kept unchanged:** the "Failure causes" breakdown card (clickable causes, count/severity badges, `Clear cause filter`), the filter bar (search / category / severity / date range), and the summary stat cards.
+- **Behavior:** at rest, one list sorted newest-first across ALL sources/categories; the category filter narrows the same single list; clicking a cause in Failure causes narrows it too.
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors; 2 pre-existing `react-refresh/only-export-components` warnings in unrelated files).
+- **Follow-up:** none.
+
+### 2026-08-11 — Errors page: category cards now ordered by newest error (not count), so the latest error is on top with or without filters
+
+- **Context (user request):** on `/errors`, unfiltered the top card (`Signal parse failed`, 238 items) showed its newest error at 08:25, while with the "today" filter applied the top card (`Broker · Stops rejected`, 180 items) showed 12:43 — user: "at rest, the latest error is at 8am, but with the filter applied, the latest error is 12pm". No data was actually missing (the failure-causes panel showed `Invalid stops 180` in both views); the 12:43 errors were simply one card down in the unfiltered list.
+- **Root cause:** `ErrorsPage` sorted category cards by item count (`b.items.length - a.items.length`). Without filters, `Signal parse failed` (238) is biggest so it renders first and its newest (08:25) leads the page; the today filter shrinks that card to 13, promoting `Broker · Stops rejected` (180) to the top.
+- **`src/pages/ErrorsPage.tsx`:** added `newestItemTimestamp(group)` helper (max `created_at` across a card's items) and changed the category-card sort to recency-descending. Items within each card were already newest-first, so the top card is now always the one containing the globally latest error. Count-based ranking still lives in the "Failure causes" panel.
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors; 2 pre-existing `react-refresh/only-export-components` warnings in unrelated files).
+- **Follow-up:** none.
+
+### 2026-08-11 — Errors page cause filter: normalize keys so clicking any cause (incl. "(no message)") actually filters
+
+- **Context (user request):** On `/errors`, clicking the "(no message)" cause in the Failure causes panel (or the "Invalid stops" / "Not enough money" chips) cleared the list to 0 — "when clicked on, the errors are empty". The "(no message)" bucket had 69 rows and the modal showed no reason.
+- **Root cause (two parts):**
+  1. **Data:** `trade_execution_logs` has 197 `failed`/`error` rows with `NULL error_message` — all from `mgmt_modify_broker_summary` (173) and `range_basket_tp_rebalance` (24). The worker writes those two actions with `status:'failed'` but no `error_message` (failure detail is only inside `request_payload.skip_reasons`, e.g. `["Invalid stops"]`) — `channelStopApply.ts:832-862` (`logMgmtModifyBrokerSummaries`) and `rangeBasketTpSync.ts:294-333` (`logRangeBasketTpRebalance`). That is why the Errors page grouped them as "(no message)" and the modal had no message to show. Broker errors are stored capitalized (`Invalid stops`, `Not enough money`); signals always carry `skip_reason`.
+  2. **Filter bug:** `ErrorsPage` grouped causes by the raw trimmed string (`(item.cause ?? '').trim() || '(no message)'`) but the filter compared `(item.cause ?? '').toLowerCase() !== causeFilter` against the raw click value. So lowercase causes matched only by luck (`entry_not_opened`, `unknown ticket`), while `(no message)` (item cause `''`/null) and capitalized causes (`Invalid stops` → `invalid stops` vs raw) always filtered to zero rows.
+- **`src/pages/ErrorsPage.tsx`:** added `causeKey(cause)` = `(cause ?? '').trim().toLowerCase() || '(no message)'` and used it for the filter predicate, the `causeBreakdown` grouping (display keeps the original trimmed text via `entry.cause`), the per-category cause chips, and the click handlers so the filter value always equals the canonical key.
+- **Second fix (same session, "no message" data):** `mgmt_modify_broker_summary` / `range_basket_tp_rebalance` failed rows have `error_message = NULL`, but the real cause is embedded in `request_payload` (`skip_reasons: ["Invalid stops"]`, `skipped_reason`, `reason`, `error`). `src/lib/errors.ts`:
+  - New `causeFromRequestPayload(payload)` — reads `skip_reasons[]` (first non-empty string) then `skipped_reason`/`skip_reason`/`failure_reason`/`reason`/`error`.
+  - `executionLogToErrorItem` now falls back to `causeFromRequestPayload(r.request_payload)` when `error_message` is empty, so the 68 "(no message)" rows now render with a real cause ("Invalid stops") and group under the correct `Broker · <category>` bucket via `applyBrokerCategory`.
+  - `extractTradeContext` now also digs symbol/direction/ticket out of a nested `request_payload`, so those rows show the trade instead of "—".
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors; 2 pre-existing `react-refresh/only-export-components` warnings), `npm run build` ✓. Prod SQL cross-check confirmed the data shape (197 null-message exec rows, capitalized broker errors).
+- **Follow-up:** worker-side improvement (optional, in `~/projects/TSCopier`, NOT this repo): have `logMgmtModifyBrokerSummaries`/`logRangeBasketTpRebalance` write `error_message` from `skip_reasons` so these failures show a real cause instead of "(no message)".
+
+### 2026-08-10 — Report modal: full pipeline added, Telegram section kept, AI gets modal context; edge function DEPLOYED
+
+- **Context (user request):** "The AI needs to focus on what was reported and the issue", "Do not remove the telegram message, it is important", "The AI should read the telegram message", messages were "too short" and lacked context, and the AI must know "which modal it is in and what to prioritize inside that modal."
+- **Root cause:** (1) the `trade-pipeline-explainer` edge function had **never been redeployed** — prod was still running the old prompt that ignored the report entirely; (2) the old prompt capped the summary at "2-4 short sentences"; (3) the AI had no idea where its output was displayed, so it answered the same generic latency question everywhere.
+- **`supabase/functions/trade-pipeline-explainer/index.ts` (DEPLOYED to prod `sxkpcovbyaficvtkpsdo` + staging `jolsabyxmjuhohozwdrc`):** summary rule now demands 4-8 sentences and leads with a verdict (VALID / PARTIALLY VALID / NOT VALID / CANNOT VERIFY) when a report is present; new rule forces reading + quoting the Raw message line-by-line and comparing declared SL/TP/entry/direction/lots vs parsed data vs actual trade; user prompt marks the raw message as "read this FIRST, quote it". New optional `context` field accepted in the body and injected as a CONTEXT line in the system prompt telling the AI which modal it is in and what to prioritize.
+- **`src/components/pipeline/PipelineSections.tsx` (`AiExplainSection`):** new optional `context` prop forwarded in the invoke body and added to the cache key.
+- **`src/components/pipeline/SignalPipelineBody.tsx`:** threads `context` through and now passes `tradeId` to `AiExplainSection`.
+- **`src/components/ReportDetailModal.tsx`:** keeps the dedicated "Telegram message & channel" section; replaces the separate AI section with the full `SignalPipelineBody` (issues, model chain, execution attempts, latency, AI analysis) inside a "Signal pipeline" section; passes report + a USER COMPLAINT MODAL context string; modal height raised from `max-h-[calc(100vh-12rem)]` to `calc(100vh-6rem)`.
+- **`src/components/SignalDetailModal.tsx` / `ErrorDetailModal.tsx` / `TradePipelineModal.tsx`:** each passes a bespoke `context` string (signal outcome first / lead with failure / trade+broker protection first respectively).
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors, 2 pre-existing warnings), `npm run build` ✓. Edge function deployed to both projects (Docker warning only; upload succeeded).
+- **Follow-up:** verify in the browser on a reported trade — the AI should now quote the Telegram signal and rule on the complaint.<｜end▁of▁thinking｜>
+
+
 
 - **Context (user request):** the AI analysis for a reported trade ("Wrong stop loss — No SL") answered the wrong question — it only commented on pipeline latency ("Telegram to listener took 4062 ms") and never addressed the report. User: "See how stupid the ai analysis for a reported trade is" and "It should be able to read the telegram message too."
 - **Root cause:** `AiExplainSection` invoked the `trade-pipeline-explainer` edge function with only signal/trade/broker IDs. The report (category + reason) was never sent, so the prompt had no complaint to judge. The raw Telegram message WAS already in the input, but no rule told the AI to use it.

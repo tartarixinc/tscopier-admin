@@ -167,6 +167,10 @@ const SKIP_REASON_EXPLANATIONS: Record<string, FailureExplanation> = {
     title: 'Closed after direction change',
     explanation: 'Telegram edited the signal to flip direction; open trades were closed and no new entry was placed.',
   },
+  no_tp_ladder: {
+    title: 'No take-profit ladder to redistribute',
+    explanation: 'The basket take-profit rebalance was skipped, not failed. No TP ladder could be resolved: the signal carried no TP levels, and no newer TP ladder had been saved for the channel since the basket opened. Nothing was modified on the broker.',
+  },
 };
 
 function explainBrokerError(message: string): FailureExplanation | null {
@@ -224,16 +228,16 @@ export function explainFailure(cause: string | null | undefined, source: ErrorSo
   const text = (cause ?? '').trim();
   if (!text) return null;
 
+  const skipReasonExplanation = SKIP_REASON_EXPLANATIONS[normalizeKey(text)];
+
   if (source === 'signal') {
-    const known = SKIP_REASON_EXPLANATIONS[normalizeKey(text)];
-    if (known) return known;
+    if (skipReasonExplanation) return skipReasonExplanation;
+    return null;
   }
 
-  if (source === 'broker' || source === 'execution' || source === 'dead_letter') {
-    return explainBrokerError(text);
-  }
-
-  return explainBrokerError(text);
+  // Execution / dead-letter rows carry either a raw broker error or a structured
+  // skip reason (e.g. no_tp_ladder). Try the broker matchers first, then the skip keys.
+  return explainBrokerError(text) ?? skipReasonExplanation ?? null;
 }
 
 export function failureTitle(cause: string | null | undefined, source: ErrorSource): string | null {

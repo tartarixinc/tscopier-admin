@@ -28,6 +28,7 @@ import { AppSettingsPage } from './pages/AppSettingsPage';
 import { CopierLogsPage } from './pages/CopierLogsPage';
 import { CopierEnginePage } from './pages/CopierEnginePage';
 import { ErrorsPage } from './pages/ErrorsPage';
+import { ErrorsAnalyticsPage } from './pages/ErrorsAnalyticsPage';
 import { ReportsPage } from './pages/ReportsPage';
 
 function ProtectedLayout({ children }: { children: React.ReactNode }) {
@@ -69,6 +70,7 @@ export default function App() {
         <Route path="/settings" element={<ProtectedLayout><AppSettingsPage /></ProtectedLayout>} />
         <Route path="/copier-logs" element={<ProtectedLayout><CopierLogsPage /></ProtectedLayout>} />
         <Route path="/errors" element={<ProtectedLayout><ErrorsPage /></ProtectedLayout>} />
+        <Route path="/errors/analytics" element={<ProtectedLayout><ErrorsAnalyticsPage /></ProtectedLayout>} />
         <Route path="/reports" element={<ProtectedLayout><ReportsPage /></ProtectedLayout>} />
       </Routes>
     </BrowserRouter>

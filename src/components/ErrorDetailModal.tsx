@@ -181,7 +181,7 @@ export function ErrorDetailModal({ error, onClose }: ErrorDetailModalProps) {
                 <Info className="w-4 h-4 text-primary-500" />
                 Full signal pipeline
               </h3>
-              <SignalPipelineBody {...pipeline} />
+              <SignalPipelineBody {...pipeline} context="ERROR DETAIL MODAL — the administrator opened this from an error report. Priorities: (1) lead with the failure — which stage failed, the exact error message, and the likely root cause; (2) whether the error was recovered (retried and succeeded) or is still failing; (3) only then note latency or model-chain context if it contributed. Do not bury the failure behind pipeline timing." />
             </section>
           )}
         </div>

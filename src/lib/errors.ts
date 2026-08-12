@@ -155,12 +155,30 @@ function firstString(record: Record<string, unknown> | null, ...keys: string[]):
   return null;
 }
 
+/** When an execution row has no error_message, the failure reason may still be
+ *  embedded in the request_payload — summary actions like mgmt_modify_broker_summary
+ *  write skip_reasons there instead of a top-level message. */
+function causeFromRequestPayload(payload: unknown): string | null {
+  const record = asRecord(payload);
+  if (!record) return null;
+  const skipReasons = record.skip_reasons;
+  if (Array.isArray(skipReasons)) {
+    const first = skipReasons.find(s => typeof s === 'string' && s.trim());
+    if (first) return first.trim();
+  }
+  return firstString(record, 'skipped_reason', 'skip_reason', 'failure_reason', 'reason', 'error');
+}
+
 /** Best-effort human label for the trade a failed step was about. */
 export function extractTradeContext(detail: unknown, raw_message: string | null | undefined): string | null {
   const record = asRecord(detail);
-  const symbol = firstString(record, 'symbol', 'symbol_orig', 'instrument');
-  const direction = firstString(record, 'direction', 'side', 'action');
-  const ticket = firstString(record, 'ticket', 'metaapi_order_id', 'order_id', 'deal_id');
+  const payload = asRecord(record?.request_payload);
+  const symbol = firstString(record, 'symbol', 'symbol_orig', 'instrument')
+    ?? firstString(payload, 'symbol', 'symbol_orig', 'instrument');
+  const direction = firstString(record, 'direction', 'side', 'action')
+    ?? firstString(payload, 'direction', 'side', 'action');
+  const ticket = firstString(record, 'ticket', 'metaapi_order_id', 'order_id', 'deal_id')
+    ?? firstString(payload, 'ticket', 'metaapi_order_id', 'order_id', 'deal_id');
   const parts: string[] = [];
   if (symbol) parts.push(String(symbol).toUpperCase());
   if (direction && !['buy', 'sell'].includes(String(direction).toLowerCase())) {
@@ -210,6 +228,7 @@ export interface ExecutionLogLike {
 export function executionLogToErrorItem(r: ExecutionLogLike): ErrorItem {
   const detail = { action: r.action, request_payload: r.request_payload, response_payload: r.response_payload };
   const { key, label } = categoryOf('execution', r.action);
+  const cause = (r.error_message ?? '').trim() || causeFromRequestPayload(r.request_payload);
   return {
     id: r.id,
     source: 'execution',
@@ -218,7 +237,7 @@ export function executionLogToErrorItem(r: ExecutionLogLike): ErrorItem {
     user_id: r.user_id,
     user_display_name: r.user_display_name,
     trade_context: extractTradeContext(detail, null),
-    cause: r.error_message,
+    cause,
     detail,
     signal_id: r.signal_id,
     broker_account_id: r.broker_account_id,
