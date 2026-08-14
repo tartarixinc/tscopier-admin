@@ -2,6 +2,26 @@
 
 ## Changelog
 
+### 2026-08-14 — Error classification audit blockers fixed: safeContext privacy + parser-stage evidence narrowed
+
+- **Context (user request):** fix only the two blockers from the final read-only audit of the admin error-classification patch. No query/count/analytics changes, no modal redesign, no TScopier changes, no DB/migration/deploy/commit/prod access.
+- **`src/lib/errors.ts`:**
+  - `safeContext` now excludes sensitive-looking keys matching `token|secret|password|credential|session|auth|authorization|key|phone|otp|hash|cookie|bearer` case-insensitively. This covers common styles such as `phone_number`, `otpCode`, `phoneCodeHash`, `sessionString`, `accessToken`, `apiKey`, `authorizationHeader`, `set_cookie`, and `bearer_token`. Sensitive fields are excluded entirely; values are not sanitized/retained.
+  - Parser-failure classification no longer treats plain `parsed_data.stage === "parse"` as proof of parse failure. Accepted parser evidence remains explicit cause keys (`parse_failed`, `signal_parse_failed`, `parser_failed`, `signal_parser_failed`) and explicit failure-stage fields (`failed_stage` / `failure_stage`) identifying parser stage.
+- **Verification:** `.\node_modules\.bin\tsc.cmd --noEmit -p tsconfig.app.json` ✓, `.\node_modules\.bin\eslint.cmd .` ✓ (0 errors; 2 pre-existing Fast Refresh warnings), `npm.cmd run build` ✓ (pre-existing Browserslist/chunk-size warnings), `git diff --check` ✓ (line-ending warnings only), conflict-marker scan ✓.
+
+### 2026-08-14 — Errors page: stop labeling every failed signal as "Signal parse failed"
+
+- **Context (user request):** implement the minimal admin-only fix from the read-only audit: `signals.status = failed` does not prove parser failure, and `entry_not_opened` must not display as "Signal parse failed." No TSCopier worker changes, DB migrations, production access, deploy, commit, or count/analytics changes.
+- **`src/lib/errors.ts`:**
+  - Added a centralized pure classification path for failed signal rows. `Signal parse failed` is now used only when explicit parser-stage evidence exists (`parse_failed`/parser failure keys or parser-stage markers in parsed data). Generic failed signals now show `Signal failed`; `entry_not_opened` shows `No position opened`.
+  - Added defensive structured failure extraction for existing selected execution payloads (`reason_code`/`reasonCode`, `trade_failure`/`tradeFailure`, safe fields such as `title`, `explanation`, `recommendedAction`, `retryable`, `userActionRequired`, and allowlisted `safeContext`). Structured metadata now takes precedence over legacy `error_message`/regex fallback when present.
+  - Added item-level severity classification so structured `retryable:false` is respected instead of being described as transient/retryable by regex.
+- **`src/pages/ErrorsPage.tsx`:** switched severity calculations/display to the item-level classifier. Did not change the four source queries, date filters, aggregation sources, pagination, `/errors` total (`filtered.length`), or `/errors/analytics`.
+- **`src/components/ErrorDetailModal.tsx`:** modal now prefers structured title/explanation/recommended action when available and avoids the generic "Transient = retry" wording when structured metadata says `retryable:false`. No retry controls were added.
+- **Verification:** `.\node_modules\.bin\tsc.cmd --noEmit -p tsconfig.app.json` ✓, `.\node_modules\.bin\eslint.cmd .` ✓ (0 errors; 2 pre-existing Fast Refresh warnings), `npm.cmd run build` ✓ (pre-existing Browserslist/chunk-size warnings), `git diff --check` ✓ (line-ending warnings only), conflict-marker scan ✓.
+- **Follow-up:** add regression tests if/when this repo gains a test harness; validate on staging data before merge/deploy.
+
 ### 2026-08-11 — Model decision chain: truthful Cerebras labels + fallback notes gated on evidence (admin display fix)
 
 - **Context (user report):** an Aug 11 signal showed `source: 'openai'` in the Model decision chain and a note claiming `Skipped stage 2 — Cerebras unavailable, fell back to OpenAI` even though no `ai_parse_fallback` event existed. Investigation with the main-repo worker debug endpoint (`POST <listener>/internal/parse-ai-debug`, token from user) against prod `https://tscopier-listener-production.up.railway.app` proved **Cerebras is working** on prod right now — both a modify and an entry test message went through stage 2 with `source: "cerebras"` (~700–950 ms, `mode: "fastpath"`), no fallback. The old signal's `openai` source means it was parsed while Cerebras wasn't running (pre-fix build or an outage window); that state is no longer reproducible. So no Railway/env changes were needed — only the admin display was lying to the user.

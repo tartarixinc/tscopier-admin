@@ -1,8 +1,8 @@
 import { useEffect } from 'react';
 import { X, User, Crosshair, AlertTriangle, Activity, Info, HelpCircle } from 'lucide-react';
 import { formatDate } from '../lib/formatters';
-import { classifyErrorSeverity, SOURCE_LABELS, type ErrorItem } from '../lib/errors';
-import { explainFailure } from '../lib/failureExplainer';
+import { classifyErrorItemSeverity, SOURCE_LABELS, type ErrorItem } from '../lib/errors';
+import { explainFailure, type FailureExplanation } from '../lib/failureExplainer';
 import { useSignalPipeline } from '../hooks/useSignalPipeline';
 import { SignalPipelineBody } from './pipeline/SignalPipelineBody';
 import { SummaryCell } from './pipeline/PipelineSections';
@@ -26,8 +26,15 @@ function SeverityBadge({ severity }: { severity: 'transient' | 'major' }) {
 
 export function ErrorDetailModal({ error, onClose }: ErrorDetailModalProps) {
   const pipeline = useSignalPipeline(error.signal_id);
-  const classification = classifyErrorSeverity(error.cause);
-  const explanation = explainFailure(error.cause, error.source);
+  const classification = classifyErrorItemSeverity(error);
+  const structuredExplanation: FailureExplanation | null = error.structured_failure
+    ? {
+      title: error.structured_failure.title ?? error.structured_failure.reasonCode ?? 'Trade execution failed',
+      explanation: error.structured_failure.explanation ?? 'Structured failure metadata was recorded for this event.',
+      actions: error.structured_failure.recommendedAction ? [error.structured_failure.recommendedAction] : undefined,
+    }
+    : null;
+  const explanation = structuredExplanation ?? explainFailure(error.cause, error.source);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -126,7 +133,9 @@ export function ErrorDetailModal({ error, onClose }: ErrorDetailModalProps) {
             </div>
             <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed break-words">{classification.reason}</p>
             <p className="text-[10px] text-slate-400">
-              Transient = likely self-resolves on retry (timeouts, HTTP 5xx, throttling). Major = likely needs intervention (rejection, config, invalid state).
+              {error.structured_failure?.retryable === false
+                ? 'This event is marked non-retryable by structured failure metadata.'
+                : 'Transient = likely self-resolves on retry (timeouts, HTTP 5xx, throttling). Major = likely needs intervention (rejection, config, invalid state).'}
             </p>
           </div>
 
@@ -148,6 +157,11 @@ export function ErrorDetailModal({ error, onClose }: ErrorDetailModalProps) {
             )}>
               {error.cause ?? 'No error message recorded.'}
             </p>
+            {error.structured_failure?.retryable === false && (
+              <p className="text-[10px] mt-2 text-error-700 dark:text-error-200">
+                Retryable: false
+              </p>
+            )}
           </div>
 
           {explanation && (
