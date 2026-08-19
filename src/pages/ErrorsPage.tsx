@@ -13,7 +13,7 @@ import { Button } from '../components/ui/Button';
 import { AlertTriangle, Search, Zap, Server, CopyX, BarChart3 } from 'lucide-react';
 import clsx from 'clsx';
 import {
-  classifyErrorSeverity,
+  classifyErrorItemSeverity,
   extractTradeContext,
   categoryOf,
   executionLogToErrorItem,
@@ -160,7 +160,7 @@ export function ErrorsPage() {
         user_display_name: displayNames[r.user_id ?? ''] ?? null,
         broker_label: brokerLabels[r.broker_account_id ?? ''] ?? null,
       });
-      built.push({ ...item, ...applyBrokerCategory(item, item.cause) });
+      built.push(item.structured_failure ? item : { ...item, ...applyBrokerCategory(item, item.cause) });
     });
 
     (sigRows ?? []).forEach((r: SignalRow) => {
@@ -235,7 +235,7 @@ export function ErrorsPage() {
     return items.filter(item => {
       if (categoryFilter && item.categoryKey !== categoryFilter) return false;
       if (severityFilter) {
-        const sev = classifyErrorSeverity(item.cause).severity;
+        const sev = classifyErrorItemSeverity(item).severity;
         if (sev !== severityFilter) return false;
       }
       if (causeFilter && causeKey(item.cause) !== causeFilter) return false;
@@ -263,7 +263,7 @@ export function ErrorsPage() {
       };
       entry.count += 1;
       entry.sources.add(item.source);
-      if (classifyErrorSeverity(item.cause).severity === 'transient') entry.transient += 1;
+      if (classifyErrorItemSeverity(item).severity === 'transient') entry.transient += 1;
       else entry.major += 1;
       byCause.set(key, entry);
     });
@@ -280,8 +280,8 @@ export function ErrorsPage() {
   }, [filtered]);
 
   const totals = useMemo(() => {
-    const transient = filtered.filter(i => classifyErrorSeverity(i.cause).severity === 'transient').length;
-    const major = filtered.filter(i => classifyErrorSeverity(i.cause).severity === 'major').length;
+    const transient = filtered.filter(i => classifyErrorItemSeverity(i).severity === 'transient').length;
+    const major = filtered.filter(i => classifyErrorItemSeverity(i).severity === 'major').length;
     const categoryCount = new Set(filtered.map(i => i.categoryKey)).size;
     return { total: filtered.length, transient, major, categoryCount };
   }, [filtered]);
@@ -451,7 +451,7 @@ export function ErrorsPage() {
               </thead>
               <tbody>
                 {paged.map(item => {
-                  const severity = classifyErrorSeverity(item.cause).severity;
+                  const severity = classifyErrorItemSeverity(item).severity;
                   return (
                     <tr key={item.id} onClick={() => setSelectedError(item)} className="cursor-pointer">
                       <td>

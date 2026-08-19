@@ -7,6 +7,17 @@ export interface SeverityClassification {
   reason: string;
 }
 
+export interface StructuredFailure {
+  reasonCode: string | null;
+  category: string | null;
+  title: string | null;
+  explanation: string | null;
+  recommendedAction: string | null;
+  retryable: boolean | null;
+  userActionRequired: boolean | null;
+  safeContext: Record<string, string | number | boolean | null>;
+}
+
 export interface ErrorItem {
   id: string;
   source: ErrorSource;
@@ -23,6 +34,7 @@ export interface ErrorItem {
   broker_label: string | null;
   attempts?: number | null;
   created_at: string | null;
+  structured_failure?: StructuredFailure | null;
 }
 
 const MAJOR_PATTERNS: RegExp[] = [
@@ -103,6 +115,16 @@ export function classifyErrorSeverity(message: string | null | undefined): Sever
   return { severity: 'major', reason: 'No known retryable pattern — treated as major until reviewed.' };
 }
 
+export function classifyErrorItemSeverity(item: Pick<ErrorItem, 'cause' | 'structured_failure'>): SeverityClassification {
+  if (item.structured_failure?.retryable === false) {
+    return { severity: 'major', reason: 'Structured failure metadata marks this event as non-retryable.' };
+  }
+  if (item.structured_failure?.retryable === true) {
+    return { severity: 'transient', reason: 'Structured failure metadata marks this event as retryable.' };
+  }
+  return classifyErrorSeverity(item.cause);
+}
+
 export const ACTION_LABELS: Record<string, string> = {
   order_send: 'Order send',
   dispatch_push_attempt: 'Queue push attempt',
@@ -155,6 +177,87 @@ function firstString(record: Record<string, unknown> | null, ...keys: string[]):
   return null;
 }
 
+function normalizeKey(reason: string | null | undefined): string {
+  return String(reason ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function safeText(value: unknown, maxLength = 500): string | null {
+  if (typeof value !== 'string') return null;
+  const text = value.trim().replace(/\s+/g, ' ');
+  if (!text) return null;
+  return text.slice(0, maxLength);
+}
+
+function safeReasonCode(value: unknown): string | null {
+  const text = typeof value === 'string' ? value.trim() : null;
+  if (!text || !/^[A-Z0-9_:-]{2,100}$/.test(text)) return null;
+  return text;
+}
+
+function safeBoolean(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
+function isSensitiveContextKey(key: string): boolean {
+  return /token|secret|password|credential|session|auth|authorization|key|phone|otp|hash|cookie|bearer/i.test(key);
+}
+
+function safeContext(value: unknown): Record<string, string | number | boolean | null> {
+  const record = asRecord(value);
+  if (!record) return {};
+
+  const out: Record<string, string | number | boolean | null> = {};
+  for (const [key, raw] of Object.entries(record)) {
+    if (!/^[a-zA-Z0-9_]{1,40}$/.test(key)) continue;
+    if (isSensitiveContextKey(key)) continue;
+    if (typeof raw === 'string') out[key] = safeText(raw, 160);
+    else if (typeof raw === 'number' && Number.isFinite(raw)) out[key] = raw;
+    else if (typeof raw === 'boolean' || raw === null) out[key] = raw;
+  }
+  return out;
+}
+
+function structuredCandidateFrom(payload: unknown): Record<string, unknown> | null {
+  const root = asRecord(payload);
+  if (!root) return null;
+
+  const nested = asRecord(root.trade_failure) ?? asRecord(root.tradeFailure);
+  if (nested) return { ...root, ...nested };
+
+  if (root.reason_code != null || root.reasonCode != null) return root;
+  return null;
+}
+
+export function extractStructuredFailure(...payloads: unknown[]): StructuredFailure | null {
+  for (const payload of payloads) {
+    const candidate = structuredCandidateFrom(payload);
+    if (!candidate) continue;
+
+    const reasonCode = safeReasonCode(candidate.reason_code ?? candidate.reasonCode);
+    const title = safeText(candidate.title, 140);
+    const explanation = safeText(candidate.explanation, 800);
+    const recommendedAction = safeText(candidate.recommendedAction ?? candidate.recommended_action, 500);
+    const category = safeText(candidate.category, 100);
+    const retryable = safeBoolean(candidate.retryable);
+    const userActionRequired = safeBoolean(candidate.userActionRequired ?? candidate.user_action_required);
+    const context = safeContext(candidate.safeContext ?? candidate.safe_context);
+
+    if (!reasonCode && !title && !explanation && !recommendedAction) continue;
+
+    return {
+      reasonCode,
+      category,
+      title,
+      explanation,
+      recommendedAction,
+      retryable,
+      userActionRequired,
+      safeContext: context,
+    };
+  }
+  return null;
+}
+
 /** When an execution row has no error_message, the failure reason may still be
  *  embedded in the request_payload — summary actions like mgmt_modify_broker_summary
  *  write skip_reasons there instead of a top-level message. */
@@ -167,6 +270,44 @@ function causeFromRequestPayload(payload: unknown): string | null {
     if (first) return first.trim();
   }
   return firstString(record, 'skipped_reason', 'skip_reason', 'failure_reason', 'reason', 'error');
+}
+
+function structuredCause(structured: StructuredFailure | null): string | null {
+  return structured?.reasonCode ?? structured?.title ?? null;
+}
+
+function categoryFromStructuredFailure(structured: StructuredFailure | null, fallback: { key: string; label: string }): { key: string; label: string } {
+  if (!structured) return fallback;
+  const keyPart = normalizeKey(structured.reasonCode ?? structured.category ?? structured.title ?? 'structured_trade_failure') || 'structured_trade_failure';
+  return {
+    key: `trade_failure:${keyPart}`,
+    label: structured.title ?? structured.category ?? structured.reasonCode ?? 'Trade execution failed',
+  };
+}
+
+function hasParseFailureEvidence(cause: string | null, parsedData: unknown): boolean {
+  const key = normalizeKey(cause);
+  if (['parse_failed', 'signal_parse_failed', 'parser_failed', 'signal_parser_failed'].includes(key)) return true;
+
+  const parsed = asRecord(parsedData);
+  const stage = normalizeKey(firstString(parsed, 'failed_stage', 'failure_stage'));
+  if (stage === 'parse' || stage === 'parser' || stage === 'signal_parse') return true;
+
+  const errorType = normalizeKey(firstString(parsed, 'error_type', 'failure_type'));
+  return ['parse_failed', 'signal_parse_failed', 'parser_failed', 'parse_error'].includes(errorType);
+}
+
+function categoryFromSignalFailure(cause: string | null, parsedData: unknown): { key: string; label: string } {
+  if (hasParseFailureEvidence(cause, parsedData)) {
+    return { key: 'signal_parse_failed', label: 'Signal parse failed' };
+  }
+  if (normalizeKey(cause) === 'entry_not_opened') {
+    return { key: 'signal_entry_not_opened', label: 'No position opened' };
+  }
+  if (cause?.trim()) {
+    return { key: 'signal_failed', label: 'Signal failed' };
+  }
+  return { key: 'signal_failed_unknown', label: 'Signal failed' };
 }
 
 /** Best-effort human label for the trade a failed step was about. */
@@ -205,7 +346,7 @@ export function categoryOf(source: ErrorSource, action: string | null | undefine
   if (source === 'execution') {
     return { key: `action:${action ?? 'unknown'}`, label: actionLabel(action) };
   }
-  if (source === 'signal') return { key: 'signal_failed', label: 'Signal parse failed' };
+  if (source === 'signal') return { key: 'signal_failed', label: 'Signal failed' };
   if (source === 'broker') return { key: 'broker_connection', label: 'Broker connection error' };
   return { key: 'dead_letter', label: 'Dead letter (retries exhausted)' };
 }
@@ -227,8 +368,10 @@ export interface ExecutionLogLike {
 
 export function executionLogToErrorItem(r: ExecutionLogLike): ErrorItem {
   const detail = { action: r.action, request_payload: r.request_payload, response_payload: r.response_payload };
-  const { key, label } = categoryOf('execution', r.action);
-  const cause = (r.error_message ?? '').trim() || causeFromRequestPayload(r.request_payload);
+  const structured = extractStructuredFailure(r.request_payload, r.response_payload);
+  const { key, label } = categoryFromStructuredFailure(structured, categoryOf('execution', r.action));
+  const legacyCause = (r.error_message ?? '').trim() || causeFromRequestPayload(r.request_payload);
+  const cause = structuredCause(structured) ?? legacyCause;
   return {
     id: r.id,
     source: 'execution',
@@ -243,6 +386,7 @@ export function executionLogToErrorItem(r: ExecutionLogLike): ErrorItem {
     broker_account_id: r.broker_account_id,
     broker_label: r.broker_label,
     created_at: r.created_at,
+    structured_failure: structured,
   };
 }
 
@@ -261,11 +405,12 @@ export function failedSignalToErrorItem(r: FailedSignalLike): ErrorItem {
   const parsed = (r.parsed_data ?? {}) as Record<string, unknown>;
   const verification = parsed._verification as { final?: { skip_reason?: string | null } } | null;
   const cause = r.skip_reason ?? verification?.final?.skip_reason ?? null;
+  const { key, label } = categoryFromSignalFailure(cause, r.parsed_data);
   return {
     id: r.id,
     source: 'signal',
-    categoryKey: 'signal_failed',
-    categoryLabel: 'Signal parse failed',
+    categoryKey: key,
+    categoryLabel: label,
     user_id: r.user_id,
     user_display_name: r.user_display_name,
     trade_context: extractTradeContext(r.parsed_data, r.raw_message),
@@ -276,6 +421,7 @@ export function failedSignalToErrorItem(r: FailedSignalLike): ErrorItem {
     broker_account_id: null,
     broker_label: null,
     created_at: r.created_at,
+    structured_failure: null,
   };
 }
 
