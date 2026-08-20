@@ -2,6 +2,37 @@
 
 ## Changelog
 
+### 2026-08-19 - Admin Errors continuation audit: parser-success trace made conservative
+
+- **Context (user request):** continue the interrupted admin error-diagnostics blocker fix without reimplementing, resetting, committing, pushing, deploying, migrating, installing packages, or connecting to staging/prod. First audited the existing uncommitted implementation against the CTO checklist.
+- **Blocker found:** `hasParseSuccessEvidence()` still treated generic `parsed_data` fields (`action`, `symbol`, `direction`, `side`, `confidence`, `_intent.kind`) as positive proof of successful parsing. The repo evidence shows those fields are displayed as parsed payload, but does not prove they only exist after a completed parser success path.
+- **`src/lib/errors.ts`:** narrowed parser success evidence to explicit `_verification` chain records (`final`, `deterministic`, `stage2`, or `stage3`) and changed the trace copy from generic parsed-data wording to `verification chain recorded`.
+- **`src/lib/errors.ts`:** split deferred-pending terminal outcomes from completed retry recovery. Pending rows now produce `Deferred pending registered` or `Recovered with pending accounts` instead of being described as completed success.
+- **`src/components/ErrorDetailModal.tsx`:** changed the AI explainer context for the Errors modal so safe mode asks for safe root-cause wording and explicitly says not to include raw payloads or arbitrary raw error text.
+- **`src/components/ErrorDetailModal.tsx`:** pending broker-account outcomes now render with the warning badge tone instead of muted.
+- **`src/components/pipeline/SignalPipelineBody.tsx`:** when `hideRawData` is active, the raw-data AI explainer section is now hidden too. The edge function intentionally sends raw Telegram text and full execution payloads for normal signal/report views, so hiding only JSON viewers was not a hard privacy boundary for the Errors modal.
+- **Deliberately not changed:** retry terminal-outcome selection, multi-account aggregation, supplemental linked-log query shape, counts, filters, pagination, analytics, and shared pipeline raw diagnostics outside the Errors modal.
+- **Follow-up:** validate the conservative parser trace against staging records that include and omit `_verification` before merge/deploy.
+
+### 2026-08-19 - Admin Errors: deterministic `entry_not_opened` root-cause diagnostics
+
+- **Context (user request):** finish the CTO-reviewed gap where `entry_not_opened` remained the largest bucket but still did not explain why trades were not entered. Scope stayed admin-only: no TScopier edits, no DB migrations, no prod connection, no deploy, no commit, no query/count/date/pagination/analytics semantics change.
+- **Root cause found:** `/errors` built failed `signals` rows and failed/error `trade_execution_logs` rows independently. A failed signal with `skip_reason='entry_not_opened'` was not enriched from its linked execution logs by `signal_id`, so the row and modal often stopped at generic "No position opened" even when `request_payload` / `response_payload` carried structured `trade_failure`, `reason_code`, `failure_reason`, `skip_reason`, broker error evidence, or a later account-specific failure.
+- **`src/lib/errors.ts`:**
+  - Added central pure root-cause diagnostics for `entry_not_opened`: structured `trade_failure` -> structured `reason_code` -> explicit `failure_reason` / `skip_reason` (except fallback `entry_not_opened`) -> normalized broker classification -> execution `error_message` -> neutral legacy fallback.
+  - Added structured reason-code copy for known codes such as `BROKER_SYMBOL_NOT_FOUND`, `SIGNAL_MISSING_REQUIRED_SL`, `INSUFFICIENT_MARGIN`, `MARKET_CLOSED`, and `BROKER_TIMEOUT`, while preferring stored structured title/explanation/action when present.
+  - Added account-level diagnostics for fan-out signals. Linked logs are grouped by `broker_account_id`; each account uses the latest meaningful failure evidence by `created_at`; mixed failures summarize at signal level and preserve per-account reasons.
+  - Added a lightweight trace (`Signal received`, `Signal parsed`, `Execution planned` / `Deferred pending registered`, `Broker attempted`, `Outcome`) using existing evidence only.
+  - Tightened `safeContext` to an allowlist plus sensitive-key exclusion before display.
+- **`src/pages/ErrorsPage.tsx`:**
+  - Fetches linked execution logs for already-loaded failed signals by `signal_id` in chunked/paginated supplemental reads. These rows only enrich diagnostics; they are not added to the error list, so `filtered.length`, total counts, date filters, pagination, and analytics source semantics remain unchanged.
+  - `entry_not_opened` list rows now show concise diagnostic labels such as `No position opened - Symbol not found`, `No position opened - Insufficient margin`, or `No position opened - Detailed reason unavailable`.
+- **`src/components/ErrorDetailModal.tsx`, `src/components/pipeline/SignalPipelineBody.tsx`, `src/components/pipeline/PipelineSections.tsx`:**
+  - Error detail now answers status, stage, reason, explanation, recommended action, evidence source, diagnostic trace, and broker-account outcomes.
+  - The Errors modal passes `hideRawData` into the full pipeline view so raw Telegram messages, parsed payload JSON, request payloads, response payloads, and payload-derived issue markers are not rendered in this diagnostic context.
+- **Verification:** `npm.cmd run typecheck` passed, `npm.cmd run lint` passed with 0 errors and 2 pre-existing Fast Refresh warnings, `npm.cmd run build` passed with pre-existing Browserslist/chunk-size warnings.
+- **Follow-up:** validate against staging data in the browser before merge/deploy. If linked execution logs for older `entry_not_opened` records do not contain structured/explicit/broker/error evidence, admin will correctly show `Detailed reason unavailable`; no TScopier change is required unless staging proves current worker events still fail to store the needed evidence.
+
 ### 2026-08-14 — Error classification audit blockers fixed: safeContext privacy + parser-stage evidence narrowed
 
 - **Context (user request):** fix only the two blockers from the final read-only audit of the admin error-classification patch. No query/count/analytics changes, no modal redesign, no TScopier changes, no DB/migration/deploy/commit/prod access.

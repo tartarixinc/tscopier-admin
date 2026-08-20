@@ -397,7 +397,7 @@ export function IssuesFoundSection({ issues }: { issues: PipelineIssue[] }) {
   );
 }
 
-export function ExecutionAttemptsSection({ logs, expectedTicket }: { logs: ExecutionLogRow[]; expectedTicket?: string | null }) {
+export function ExecutionAttemptsSection({ logs, expectedTicket, showRawPayloads = true, showRawErrors = true }: { logs: ExecutionLogRow[]; expectedTicket?: string | null; showRawPayloads?: boolean; showRawErrors?: boolean }) {
   return (
     <section>
       <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">
@@ -451,7 +451,7 @@ export function ExecutionAttemptsSection({ logs, expectedTicket }: { logs: Execu
                     );
                   })()
               )}
-              {log.error_message && (
+              {showRawErrors && log.error_message && (
                 <div className="space-y-1">
                   <p className="text-xs text-error-600 dark:text-error-400 break-words">Broker error: {log.error_message}</p>
                   {plainFailureReason(log) && (
@@ -459,8 +459,8 @@ export function ExecutionAttemptsSection({ logs, expectedTicket }: { logs: Execu
                   )}
                 </div>
               )}
-              {log.request_payload != null && <JsonViewer data={log.request_payload} label="Request" />}
-              {log.response_payload != null && <JsonViewer data={log.response_payload} label="Response" />}
+              {showRawPayloads && log.request_payload != null && <JsonViewer data={log.request_payload} label="Request" />}
+              {showRawPayloads && log.response_payload != null && <JsonViewer data={log.response_payload} label="Response" />}
             </div>
           ))}
         </div>

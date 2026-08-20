@@ -18,6 +18,7 @@ import {
   categoryOf,
   executionLogToErrorItem,
   failedSignalToErrorItem,
+  type EntryExecutionLogLike,
   type ErrorItem,
   type ErrorSource,
 } from '../lib/errors';
@@ -25,6 +26,8 @@ import { failureTitle } from '../lib/failureExplainer';
 import { applyBrokerCategory } from '../lib/brokerErrors';
 
 const PAGE_SIZE = 50;
+const LINKED_LOG_PAGE_SIZE = 1000;
+const LINKED_LOG_SIGNAL_CHUNK_SIZE = 25;
 
 /** Canonical cause key for grouping + filtering. Empty causes collapse to a single bucket. */
 function causeKey(cause: string | null | undefined): string {
@@ -77,6 +80,23 @@ interface DeadLetterRow {
   payload: unknown;
   status: string | null;
   created_at: string;
+}
+
+function chunk<T>(values: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < values.length; i += size) chunks.push(values.slice(i, i + size));
+  return chunks;
+}
+
+function normalizedKey(value: string | null | undefined): string {
+  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function signalNeedsLinkedExecutionEvidence(row: SignalRow): boolean {
+  const parsed = (row.parsed_data ?? {}) as Record<string, unknown>;
+  const verification = parsed._verification as { final?: { skip_reason?: string | null } } | null;
+  const cause = row.skip_reason ?? verification?.final?.skip_reason ?? null;
+  return normalizedKey(cause) === 'entry_not_opened';
 }
 
 export function ErrorsPage() {
@@ -142,7 +162,31 @@ export function ErrorsPage() {
 
     const displayNames = await fetchDisplayNames([...userIds]);
 
-    const brokerIds = [...new Set((execRows ?? []).map(r => r.broker_account_id).filter(Boolean))];
+    const linkedLogRows: ExecutionRow[] = [];
+    const linkedSignalIds = [...new Set((sigRows ?? []).filter(signalNeedsLinkedExecutionEvidence).map(r => r.id).filter(Boolean))];
+    for (const signalChunk of chunk(linkedSignalIds, LINKED_LOG_SIGNAL_CHUNK_SIZE)) {
+      let fromRow = 0;
+      let hasMore = true;
+      while (hasMore) {
+        const { data } = await adminSupabase
+          .from('trade_execution_logs')
+          .select('id, user_id, signal_id, broker_account_id, action, status, error_message, request_payload, response_payload, created_at')
+          .in('signal_id', signalChunk)
+          .order('created_at', { ascending: false })
+          .range(fromRow, fromRow + LINKED_LOG_PAGE_SIZE - 1);
+        const pageRows = (data ?? []) as ExecutionRow[];
+        linkedLogRows.push(...pageRows);
+        hasMore = pageRows.length === LINKED_LOG_PAGE_SIZE;
+        fromRow += LINKED_LOG_PAGE_SIZE;
+      }
+    }
+
+    const brokerIds = [...new Set(
+      (execRows ?? [])
+        .map(r => r.broker_account_id)
+        .concat(linkedLogRows.map(r => r.broker_account_id))
+        .filter(Boolean),
+    )];
     const brokerLabels: Record<string, string> = {};
     if (brokerIds.length > 0) {
       const { data: brokerLabelRows } = await adminSupabase
@@ -151,6 +195,17 @@ export function ErrorsPage() {
         .in('id', brokerIds);
       (brokerLabelRows ?? []).forEach(b => { brokerLabels[b.id] = b.label ?? ''; });
     }
+
+    const linkedLogsBySignal = new Map<string, EntryExecutionLogLike[]>();
+    linkedLogRows.forEach(r => {
+      if (!r.signal_id) return;
+      const logs = linkedLogsBySignal.get(r.signal_id) ?? [];
+      logs.push({
+        ...r,
+        broker_label: brokerLabels[r.broker_account_id ?? ''] ?? null,
+      });
+      linkedLogsBySignal.set(r.signal_id, logs);
+    });
 
     const built: ErrorItem[] = [];
 
@@ -167,8 +222,8 @@ export function ErrorsPage() {
       const item = failedSignalToErrorItem({
         ...r,
         user_display_name: displayNames[r.user_id ?? ''] ?? null,
-      });
-      built.push({ ...item, ...applyBrokerCategory(item, item.cause) });
+      }, linkedLogsBySignal.get(r.id) ?? []);
+      built.push(item.diagnostics ? item : { ...item, ...applyBrokerCategory(item, item.cause) });
     });
 
     (brokerRows ?? []).forEach((r: BrokerRow) => {
@@ -251,7 +306,7 @@ export function ErrorsPage() {
   }, [items, categoryFilter, severityFilter, causeFilter, search]);
 
   const causeBreakdown = useMemo(() => {
-    const byCause = new Map<string, { cause: string; count: number; transient: number; major: number; sources: Set<ErrorSource> }>();
+    const byCause = new Map<string, { cause: string; count: number; transient: number; major: number; sources: Set<ErrorSource>; diagnosticTitle: string | null }>();
     filtered.forEach(item => {
       const key = causeKey(item.cause);
       const entry = byCause.get(key) ?? {
@@ -260,17 +315,20 @@ export function ErrorsPage() {
         transient: 0,
         major: 0,
         sources: new Set<ErrorSource>(),
+        diagnosticTitle: item.diagnostics ? `${item.categoryLabel} - ${item.diagnostics.rootCause.reason}` : null,
       };
       entry.count += 1;
       entry.sources.add(item.source);
+      if (!entry.diagnosticTitle && item.diagnostics) entry.diagnosticTitle = `${item.categoryLabel} - ${item.diagnostics.rootCause.reason}`;
       if (classifyErrorItemSeverity(item).severity === 'transient') entry.transient += 1;
       else entry.major += 1;
       byCause.set(key, entry);
     });
     return [...byCause.entries()]
       .map(([key, v]) => {
-        let title: string | null = null;
+        let title: string | null = v.diagnosticTitle;
         for (const source of v.sources) {
+          if (title) break;
           title = failureTitle(v.cause, source);
           if (title) break;
         }
@@ -304,6 +362,16 @@ export function ErrorsPage() {
     if (source === 'signal') return <AlertTriangle className="w-3.5 h-3.5" />;
     if (source === 'broker') return <Server className="w-3.5 h-3.5" />;
     return <CopyX className="w-3.5 h-3.5" />;
+  };
+
+  const causeTitleFor = (item: ErrorItem): string | null => {
+    if (item.diagnostics) return `${item.categoryLabel} - ${item.diagnostics.rootCause.reason}`;
+    return failureTitle(item.cause, item.source);
+  };
+
+  const causeSubtitleFor = (item: ErrorItem): string => {
+    if (item.diagnostics) return item.diagnostics.rootCause.evidenceLabel;
+    return item.cause ?? '(no message)';
   };
 
   return (
@@ -468,11 +536,11 @@ export function ErrorsPage() {
                       <td><span className="font-mono text-xs text-slate-500">{item.trade_context ?? '—'}</span></td>
                       <td>
                         <div className="max-w-xs">
-                          {failureTitle(item.cause, item.source) && (
-                            <p className="text-xs text-slate-700 dark:text-slate-200 truncate">{failureTitle(item.cause, item.source)}</p>
+                          {causeTitleFor(item) && (
+                            <p className="text-xs text-slate-700 dark:text-slate-200 truncate">{causeTitleFor(item)}</p>
                           )}
-                          <p className="text-[10px] text-slate-400 font-mono truncate" title={item.cause ?? ''}>
-                            {truncate(item.cause ?? '(no message)', 60)}
+                          <p className="text-[10px] text-slate-400 font-mono truncate" title={causeSubtitleFor(item)}>
+                            {truncate(causeSubtitleFor(item), 60)}
                           </p>
                         </div>
                       </td>

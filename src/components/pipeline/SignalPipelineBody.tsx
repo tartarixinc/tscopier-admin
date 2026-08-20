@@ -57,6 +57,7 @@ function ManagementFailBanner({ error, count }: { error: string; count: number }
 export function SignalPipelineBody(data: SignalPipelineData & {
   report?: { category?: string | null; reason?: string | null; symbol?: string | null; direction?: string | null } | null;
   context?: string | null;
+  hideRawData?: boolean;
 }) {
   const {
     signal,
@@ -76,6 +77,7 @@ export function SignalPipelineBody(data: SignalPipelineData & {
     issues,
     report,
     context,
+    hideRawData,
   } = data;
 
   const failures = executionLogs.filter(l => l.status === 'failed');
@@ -101,7 +103,7 @@ export function SignalPipelineBody(data: SignalPipelineData & {
             <SummaryCell label="Created" value={signal?.created_at ? formatDate(signal.created_at) : '—'} />
           </div>
 
-          <IssuesFoundSection issues={issues} />
+          {!hideRawData && <IssuesFoundSection issues={issues} />}
 
           <ModelDecisionChainSection signal={signal} listenerEvents={listenerEvents} />
           <AiVerificationSection signal={signal} listenerEvents={listenerEvents} />
@@ -110,8 +112,8 @@ export function SignalPipelineBody(data: SignalPipelineData & {
             <SkipBanner skipReason={channelSkipReason ?? mainSkipReason} />
           )}
 
-          {signalFailed && firstFailure && <FailBanner error={firstFailure} />}
-          {managementFailures && firstFailure && <ManagementFailBanner error={firstFailure} count={failures.length} />}
+          {!hideRawData && signalFailed && firstFailure && <FailBanner error={firstFailure} />}
+          {!hideRawData && managementFailures && firstFailure && <ManagementFailBanner error={firstFailure} count={failures.length} />}
 
           {trade && (
             <section>
@@ -152,25 +154,27 @@ export function SignalPipelineBody(data: SignalPipelineData & {
 
           <LatencyGanttSection durations={durations} />
 
-          <AiExplainSection signalId={signal?.id ?? null} tradeId={trade?.id ?? null} report={report} context={context} />
+          {!hideRawData && <AiExplainSection signalId={signal?.id ?? null} tradeId={trade?.id ?? null} report={report} context={context} />}
 
           <LatencyBreakdownSection stats={stats} />
 
-          <section>
-            <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">Signal data</h3>
-            <div className="space-y-2">
-              <JsonViewer data={signal?.raw_message ?? null} label="Raw message" />
-              <JsonViewer data={signal?.parsed_data ?? null} label="Parsed data" />
-              {channelSignal && channelSignal.id !== signal?.channel_signal_id && (
-                <p className="text-xs text-slate-400 flex items-center gap-1.5">
-                  <Info className="w-3.5 h-3.5" />
-                  Canonical channel signal (shared by all users on this channel)
-                </p>
-              )}
-            </div>
-          </section>
+          {!hideRawData && (
+            <section>
+              <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">Signal data</h3>
+              <div className="space-y-2">
+                <JsonViewer data={signal?.raw_message ?? null} label="Raw message" />
+                <JsonViewer data={signal?.parsed_data ?? null} label="Parsed data" />
+                {channelSignal && channelSignal.id !== signal?.channel_signal_id && (
+                  <p className="text-xs text-slate-400 flex items-center gap-1.5">
+                    <Info className="w-3.5 h-3.5" />
+                    Canonical channel signal (shared by all users on this channel)
+                  </p>
+                )}
+              </div>
+            </section>
+          )}
 
-          {channelSignal?.raw_message != null && channelSignal.raw_message !== signal?.raw_message && (
+          {!hideRawData && channelSignal?.raw_message != null && channelSignal.raw_message !== signal?.raw_message && (
             <section>
               <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">Canonical channel signal</h3>
               <div className="space-y-2">
@@ -180,7 +184,7 @@ export function SignalPipelineBody(data: SignalPipelineData & {
             </section>
           )}
 
-          <ExecutionAttemptsSection logs={executionLogs} />
+          <ExecutionAttemptsSection logs={executionLogs} showRawPayloads={!hideRawData} showRawErrors={!hideRawData} />
         </>
       )}
     </div>

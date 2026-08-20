@@ -1,3 +1,5 @@
+import { classifyBrokerError } from './brokerErrors';
+
 export type ErrorSource = 'execution' | 'signal' | 'broker' | 'dead_letter';
 
 export type ErrorSeverity = 'transient' | 'major';
@@ -18,6 +20,50 @@ export interface StructuredFailure {
   safeContext: Record<string, string | number | boolean | null>;
 }
 
+export type RootCauseEvidence =
+  | 'structured_trade_failure'
+  | 'structured_reason_code'
+  | 'explicit_failure_reason'
+  | 'normalized_broker_error'
+  | 'execution_error_message'
+  | 'legacy_fallback';
+
+export interface ErrorRootCause {
+  status: string;
+  stage: string;
+  reason: string;
+  explanation: string;
+  recommendedAction: string | null;
+  retryable: boolean | null;
+  userActionRequired: boolean | null;
+  safeContext: Record<string, string | number | boolean | null>;
+  evidence: RootCauseEvidence;
+  evidenceLabel: string;
+  sourceLogId: string | null;
+  created_at: string | null;
+}
+
+export interface AccountDiagnostic {
+  broker_account_id: string | null;
+  broker_label: string | null;
+  outcome: 'success' | 'failed' | 'pending' | 'unknown';
+  rootCause: ErrorRootCause | null;
+  created_at: string | null;
+}
+
+export interface DiagnosticTraceStep {
+  label: string;
+  state: 'success' | 'failed' | 'pending' | 'unknown';
+  detail: string | null;
+}
+
+export interface ErrorDiagnostics {
+  rootCause: ErrorRootCause;
+  accountDiagnostics: AccountDiagnostic[];
+  trace: DiagnosticTraceStep[];
+  selectionRule: string;
+}
+
 export interface ErrorItem {
   id: string;
   source: ErrorSource;
@@ -35,6 +81,7 @@ export interface ErrorItem {
   attempts?: number | null;
   created_at: string | null;
   structured_failure?: StructuredFailure | null;
+  diagnostics?: ErrorDiagnostics | null;
 }
 
 const MAJOR_PATTERNS: RegExp[] = [
@@ -115,7 +162,13 @@ export function classifyErrorSeverity(message: string | null | undefined): Sever
   return { severity: 'major', reason: 'No known retryable pattern — treated as major until reviewed.' };
 }
 
-export function classifyErrorItemSeverity(item: Pick<ErrorItem, 'cause' | 'structured_failure'>): SeverityClassification {
+export function classifyErrorItemSeverity(item: Pick<ErrorItem, 'cause' | 'structured_failure' | 'diagnostics'>): SeverityClassification {
+  if (item.diagnostics?.rootCause.retryable === false) {
+    return { severity: 'major', reason: 'Root-cause metadata marks this event as non-retryable.' };
+  }
+  if (item.diagnostics?.rootCause.retryable === true) {
+    return { severity: 'transient', reason: 'Root-cause metadata marks this event as retryable.' };
+  }
   if (item.structured_failure?.retryable === false) {
     return { severity: 'major', reason: 'Structured failure metadata marks this event as non-retryable.' };
   }
@@ -194,6 +247,13 @@ function safeReasonCode(value: unknown): string | null {
   return text;
 }
 
+function safeLegacyReasonKey(value: unknown): string | null {
+  const text = typeof value === 'string' ? value.trim() : null;
+  if (!text || !/^[a-zA-Z0-9_:-]{2,100}$/.test(text)) return null;
+  if (isSensitiveContextKey(text)) return null;
+  return text;
+}
+
 function safeBoolean(value: unknown): boolean | null {
   return typeof value === 'boolean' ? value : null;
 }
@@ -201,6 +261,33 @@ function safeBoolean(value: unknown): boolean | null {
 function isSensitiveContextKey(key: string): boolean {
   return /token|secret|password|credential|session|auth|authorization|key|phone|otp|hash|cookie|bearer/i.test(key);
 }
+
+const SAFE_CONTEXT_KEYS = new Set([
+  'accountlabel',
+  'action',
+  'brokerlabel',
+  'brokername',
+  'brokersymbol',
+  'category',
+  'direction',
+  'entry',
+  'latencyms',
+  'lotsize',
+  'marketstate',
+  'ordertype',
+  'price',
+  'reasoncode',
+  'requestedsymbol',
+  'retryafterms',
+  'side',
+  'sl',
+  'stage',
+  'status',
+  'symbol',
+  'timeoutms',
+  'tp',
+  'usersymbol',
+]);
 
 function safeContext(value: unknown): Record<string, string | number | boolean | null> {
   const record = asRecord(value);
@@ -210,6 +297,7 @@ function safeContext(value: unknown): Record<string, string | number | boolean |
   for (const [key, raw] of Object.entries(record)) {
     if (!/^[a-zA-Z0-9_]{1,40}$/.test(key)) continue;
     if (isSensitiveContextKey(key)) continue;
+    if (!SAFE_CONTEXT_KEYS.has(key.toLowerCase().replace(/[^a-z0-9]/g, ''))) continue;
     if (typeof raw === 'string') out[key] = safeText(raw, 160);
     else if (typeof raw === 'number' && Number.isFinite(raw)) out[key] = raw;
     else if (typeof raw === 'boolean' || raw === null) out[key] = raw;
@@ -272,8 +360,231 @@ function causeFromRequestPayload(payload: unknown): string | null {
   return firstString(record, 'skipped_reason', 'skip_reason', 'failure_reason', 'reason', 'error');
 }
 
+function explicitFailureReason(...payloads: unknown[]): string | null {
+  for (const payload of payloads) {
+    const record = asRecord(payload);
+    const reason = firstString(record, 'failure_reason', 'failureReason', 'skip_reason', 'skipReason', 'skipped_reason', 'skippedReason');
+    if (reason) return reason;
+  }
+  return null;
+}
+
 function structuredCause(structured: StructuredFailure | null): string | null {
   return structured?.reasonCode ?? structured?.title ?? null;
+}
+
+type RootCauseContext = 'entry' | 'execution';
+
+function actionKey(action: string | null | undefined): string {
+  return normalizeKey(action);
+}
+
+const ENTRY_SUCCESS_ACTIONS = new Set([
+  'order_send',
+  'open_trade',
+  'virtual_pending_fired',
+]);
+
+const DEFERRED_SUCCESS_ACTIONS = new Set([
+  'virtual_pending_inserted',
+  'range_broker_pending_inserted',
+]);
+
+const PLANNING_ACTIONS = new Set([
+  'dispatch_push_attempt',
+  'order_send',
+  'open_trade',
+  'virtual_pending_inserted',
+  'range_broker_pending_inserted',
+]);
+
+const BROKER_ATTEMPT_ACTIONS = new Set([
+  'order_send',
+  'open_trade',
+  'virtual_pending_fired',
+]);
+
+function isFailedStatus(status: string | null | undefined): boolean {
+  return ['failed', 'error'].includes(String(status ?? '').toLowerCase());
+}
+
+function isSuccessStatus(status: string | null | undefined): boolean {
+  return String(status ?? '').toLowerCase() === 'success';
+}
+
+function isMeaningfulEntrySuccess(log: EntryExecutionLogLike): boolean {
+  if (!isSuccessStatus(log.status)) return false;
+  const action = actionKey(log.action);
+  return ENTRY_SUCCESS_ACTIONS.has(action) || DEFERRED_SUCCESS_ACTIONS.has(action);
+}
+
+function isDeferredSuccess(log: EntryExecutionLogLike): boolean {
+  return isSuccessStatus(log.status) && DEFERRED_SUCCESS_ACTIONS.has(actionKey(log.action));
+}
+
+function statusForContext(context: RootCauseContext): string {
+  return context === 'entry' ? 'Trade not opened' : 'Execution failed';
+}
+
+function stageFromAction(action: string | null | undefined, context: RootCauseContext): string {
+  if (context === 'entry') return 'Broker execution';
+  const key = actionKey(action);
+  if (key.includes('close')) return 'Close execution';
+  if (key.includes('modify') || key.includes('tp') || key.includes('sl') || key.includes('rebalance')) return 'Management execution';
+  if (key.includes('sync') || key.includes('reconcile')) return 'Synchronization';
+  if (key.includes('order') || key.includes('open')) return 'Broker execution';
+  return 'Execution';
+}
+
+function titleFromReasonCode(reasonCode: string): string {
+  return reasonCode
+    .toLowerCase()
+    .replace(/^broker_/, '')
+    .replace(/^signal_/, '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function knownReasonTitle(normalizedCode: string, reasonCode: string): string {
+  if (['broker_symbol_not_found', 'symbol_not_found', 'broker_symbol_select_failed'].includes(normalizedCode)) return 'Symbol not found';
+  if (['signal_missing_required_sl', 'missing_required_sl', 'stop_loss_missing'].includes(normalizedCode)) return 'Stop loss missing';
+  if (['insufficient_margin', 'broker_insufficient_margin', 'insufficient_funds'].includes(normalizedCode)) return 'Insufficient margin';
+  if (['market_closed', 'broker_market_closed'].includes(normalizedCode)) return 'Market closed';
+  if (['broker_timeout', 'timeout', 'broker_request_timeout'].includes(normalizedCode)) return 'Broker timeout';
+  return titleFromReasonCode(reasonCode);
+}
+
+function knownReasonExplanation(normalizedCode: string): string {
+  if (['broker_symbol_not_found', 'symbol_not_found', 'broker_symbol_select_failed'].includes(normalizedCode)) {
+    return 'The requested instrument was not available on this broker account under a recognized symbol.';
+  }
+  if (['signal_missing_required_sl', 'missing_required_sl', 'stop_loss_missing'].includes(normalizedCode)) {
+    return 'The signal did not include the required stop loss value for this product rule or account configuration.';
+  }
+  if (['insufficient_margin', 'broker_insufficient_margin', 'insufficient_funds'].includes(normalizedCode)) {
+    return 'The broker account did not have enough free margin to open the requested position.';
+  }
+  if (['market_closed', 'broker_market_closed'].includes(normalizedCode)) {
+    return 'The broker market for this instrument was closed when execution was attempted.';
+  }
+  if (['broker_timeout', 'timeout', 'broker_request_timeout'].includes(normalizedCode)) {
+    return 'The broker request did not complete before the timeout recorded by the execution layer.';
+  }
+  return 'A structured reason code was recorded, but no more specific explanation was stored with it.';
+}
+
+function knownReasonAction(normalizedCode: string): string | null {
+  if (['broker_symbol_not_found', 'symbol_not_found', 'broker_symbol_select_failed'].includes(normalizedCode)) {
+    return 'Check the account/channel symbol mapping for this broker account.';
+  }
+  if (['signal_missing_required_sl', 'missing_required_sl', 'stop_loss_missing'].includes(normalizedCode)) {
+    return 'Review the signal source and only configure a fallback stop loss if product rules allow it.';
+  }
+  if (['insufficient_margin', 'broker_insufficient_margin', 'insufficient_funds'].includes(normalizedCode)) {
+    return 'Ask the user to reduce risk or add funds before retrying new entries.';
+  }
+  if (['market_closed', 'broker_market_closed'].includes(normalizedCode)) {
+    return 'Wait until the market is open, then process a new valid signal.';
+  }
+  return null;
+}
+
+function rootCauseFromReasonCode(
+  reasonCode: string,
+  structured: StructuredFailure | null,
+  sourceLogId: string | null,
+  createdAt: string | null,
+  context: RootCauseContext,
+  action: string | null | undefined,
+): ErrorRootCause {
+  const code = normalizeKey(reasonCode);
+  const hasStructuredCopy = Boolean(structured?.title || structured?.explanation || structured?.recommendedAction);
+
+  return {
+    status: statusForContext(context),
+    stage: code.startsWith('signal_') ? 'Signal validation' : stageFromAction(action, context),
+    reason: structured?.title ?? knownReasonTitle(code, reasonCode),
+    explanation: structured?.explanation ?? knownReasonExplanation(code),
+    recommendedAction: structured?.recommendedAction ?? knownReasonAction(code),
+    retryable: structured?.retryable ?? null,
+    userActionRequired: structured?.userActionRequired ?? null,
+    safeContext: structured?.safeContext ?? {},
+    evidence: hasStructuredCopy ? 'structured_trade_failure' : 'structured_reason_code',
+    evidenceLabel: hasStructuredCopy ? 'Structured trade_failure' : 'Structured reason_code',
+    sourceLogId,
+    created_at: createdAt,
+  };
+}
+
+function rootCauseFromStructuredFailure(
+  structured: StructuredFailure,
+  sourceLogId: string | null,
+  createdAt: string | null,
+  context: RootCauseContext,
+  action: string | null | undefined,
+): ErrorRootCause {
+  if (structured.reasonCode) {
+    return rootCauseFromReasonCode(structured.reasonCode, structured, sourceLogId, createdAt, context, action);
+  }
+
+  return {
+    status: statusForContext(context),
+    stage: structured.category?.toLowerCase().includes('signal') ? 'Signal validation' : stageFromAction(action, context),
+    reason: structured.title ?? 'Trade execution failed',
+    explanation: structured.explanation ?? 'Structured failure metadata was recorded, but no detailed explanation was stored.',
+    recommendedAction: structured.recommendedAction,
+    retryable: structured.retryable,
+    userActionRequired: structured.userActionRequired,
+    safeContext: structured.safeContext,
+    evidence: 'structured_trade_failure',
+    evidenceLabel: 'Structured trade_failure',
+    sourceLogId,
+    created_at: createdAt,
+  };
+}
+
+function rootCauseFromBrokerError(message: string, sourceLogId: string | null, createdAt: string | null, context: RootCauseContext, action: string | null | undefined): ErrorRootCause | null {
+  const broker = classifyBrokerError(message);
+  if (broker.category === 'other') return null;
+
+  const explanation = (() => {
+    if (broker.category === 'symbol_select_failed') return 'The broker did not expose the requested instrument under a recognized symbol.';
+    if (broker.category === 'margin') return 'The broker account did not have enough free margin or funds to open or manage the trade.';
+    if (broker.category === 'market_closed') return 'The broker market was closed for this instrument when execution was attempted.';
+    if (broker.category === 'stops_rejected') return 'The broker rejected the stop loss or take profit levels for this order.';
+    if (broker.category === 'trading_disabled') return 'The broker account or terminal was not allowed to trade at the time of execution.';
+    if (broker.category === 'account_unavailable') return 'The broker account was unavailable or not logged in when execution was attempted.';
+    if (broker.category === 'http_5xx') return 'The broker platform returned a server-side HTTP error during execution.';
+    if (broker.category === 'timeout') return 'The broker or bridge did not respond before the execution request timed out.';
+    if (broker.category === 'rate_limit') return 'The broker or bridge throttled the request.';
+    if (broker.category === 'unknown_ticket') return 'The broker did not recognize the ticket referenced by the execution action.';
+    return 'The broker error matched a known normalized category.';
+  })();
+
+  const recommendedAction = (() => {
+    if (broker.category === 'symbol_select_failed') return 'Check the account/channel symbol mapping for this broker account.';
+    if (broker.category === 'margin') return 'Ask the user to reduce risk or add funds before retrying new entries.';
+    if (broker.category === 'market_closed') return 'Wait until the market is open, then process a new valid signal.';
+    if (broker.category === 'stops_rejected') return 'Review the requested SL/TP against the broker stop-distance rules.';
+    if (broker.category === 'trading_disabled') return 'Confirm the account is connected and automated trading is enabled.';
+    if (broker.category === 'account_unavailable') return 'Reconnect the broker account and confirm the terminal is logged in.';
+    return null;
+  })();
+
+  return {
+    status: statusForContext(context),
+    stage: stageFromAction(action, context),
+    reason: broker.label,
+    explanation,
+    recommendedAction,
+    retryable: broker.retryable,
+    userActionRequired: broker.severity === 'major',
+    safeContext: {},
+    evidence: 'normalized_broker_error',
+    evidenceLabel: 'Normalized broker error',
+    sourceLogId,
+    created_at: createdAt,
+  };
 }
 
 function categoryFromStructuredFailure(structured: StructuredFailure | null, fallback: { key: string; label: string }): { key: string; label: string } {
@@ -281,7 +592,7 @@ function categoryFromStructuredFailure(structured: StructuredFailure | null, fal
   const keyPart = normalizeKey(structured.reasonCode ?? structured.category ?? structured.title ?? 'structured_trade_failure') || 'structured_trade_failure';
   return {
     key: `trade_failure:${keyPart}`,
-    label: structured.title ?? structured.category ?? structured.reasonCode ?? 'Trade execution failed',
+    label: structured.title ?? (structured.reasonCode ? knownReasonTitle(normalizeKey(structured.reasonCode), structured.reasonCode) : structured.category) ?? 'Trade execution failed',
   };
 }
 
@@ -297,6 +608,17 @@ function hasParseFailureEvidence(cause: string | null, parsedData: unknown): boo
   return ['parse_failed', 'signal_parse_failed', 'parser_failed', 'parse_error'].includes(errorType);
 }
 
+function hasParseSuccessEvidence(parsedData: unknown): boolean {
+  const parsed = asRecord(parsedData);
+  if (!parsed) return false;
+  const verification = asRecord(parsed._verification);
+  if (!verification) return false;
+  return asRecord(verification.final) != null
+    || asRecord(verification.deterministic) != null
+    || asRecord(verification.stage2) != null
+    || asRecord(verification.stage3) != null;
+}
+
 function categoryFromSignalFailure(cause: string | null, parsedData: unknown): { key: string; label: string } {
   if (hasParseFailureEvidence(cause, parsedData)) {
     return { key: 'signal_parse_failed', label: 'Signal parse failed' };
@@ -308,6 +630,250 @@ function categoryFromSignalFailure(cause: string | null, parsedData: unknown): {
     return { key: 'signal_failed', label: 'Signal failed' };
   }
   return { key: 'signal_failed_unknown', label: 'Signal failed' };
+}
+
+function rootCauseFromLegacyFallback(sourceLogId: string | null, createdAt: string | null, context: RootCauseContext = 'entry'): ErrorRootCause {
+  return {
+    status: statusForContext(context),
+    stage: 'Execution outcome',
+    reason: 'Detailed reason unavailable',
+    explanation: 'This older event did not store enough structured execution detail to identify the exact cause.',
+    recommendedAction: 'Review linked execution attempts and the broker account configuration before taking action.',
+    retryable: null,
+    userActionRequired: null,
+    safeContext: {},
+    evidence: 'legacy_fallback',
+    evidenceLabel: 'Safe legacy fallback',
+    sourceLogId,
+    created_at: createdAt,
+  };
+}
+
+export interface EntryExecutionLogLike {
+  id: string;
+  broker_account_id: string | null;
+  broker_label: string | null;
+  action: string | null;
+  status: string;
+  error_message: string | null;
+  request_payload: unknown;
+  response_payload: unknown;
+  created_at: string | null;
+}
+
+function rootCauseFromExecutionLog(log: EntryExecutionLogLike, context: RootCauseContext = 'execution'): ErrorRootCause | null {
+  if (!isFailedStatus(log.status)) return null;
+
+  const structured = extractStructuredFailure(log.request_payload, log.response_payload);
+  if (structured) return rootCauseFromStructuredFailure(structured, log.id, log.created_at, context, log.action);
+
+  const reasonCode = firstString(asRecord(log.request_payload), 'reason_code', 'reasonCode')
+    ?? firstString(asRecord(log.response_payload), 'reason_code', 'reasonCode');
+  if (reasonCode && safeReasonCode(reasonCode)) {
+    return rootCauseFromReasonCode(reasonCode, null, log.id, log.created_at, context, log.action);
+  }
+
+  const explicitReason = explicitFailureReason(log.request_payload, log.response_payload);
+  const safeExplicitReason = safeLegacyReasonKey(explicitReason);
+  if (safeExplicitReason && normalizeKey(safeExplicitReason) !== 'entry_not_opened') {
+    const brokerRoot = rootCauseFromBrokerError(safeExplicitReason, log.id, log.created_at, context, log.action);
+    return brokerRoot ?? {
+      status: statusForContext(context),
+      stage: normalizeKey(safeExplicitReason).startsWith('signal_') ? 'Signal validation' : 'Execution planning',
+      reason: titleFromReasonCode(safeExplicitReason),
+      explanation: 'The execution layer recorded this explicit failure or skip reason for the signal.',
+      recommendedAction: null,
+      retryable: null,
+      userActionRequired: null,
+      safeContext: {},
+      evidence: 'explicit_failure_reason',
+      evidenceLabel: 'Explicit failure_reason / skip_reason',
+      sourceLogId: log.id,
+      created_at: log.created_at,
+    };
+  }
+
+  if (log.error_message?.trim()) {
+    const errorMessage = log.error_message.trim();
+    return rootCauseFromBrokerError(errorMessage, log.id, log.created_at, context, log.action)
+      ?? rootCauseFromLegacyFallback(log.id, log.created_at, context);
+  }
+
+  return null;
+}
+
+function logTime(log: EntryExecutionLogLike): number {
+  const ms = new Date(log.created_at ?? 0).getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function compareNewest(a: EntryExecutionLogLike, b: EntryExecutionLogLike): number {
+  return logTime(b) - logTime(a);
+}
+
+function accountKey(log: EntryExecutionLogLike): string {
+  return log.broker_account_id ?? 'unknown';
+}
+
+interface AccountTerminalOutcome {
+  outcome: 'success' | 'failed' | 'pending';
+  rootCause: ErrorRootCause | null;
+  log: EntryExecutionLogLike;
+}
+
+function latestMeaningfulAccountOutcome(groupLogs: EntryExecutionLogLike[]): AccountTerminalOutcome | null {
+  const newestFirst = groupLogs.slice().sort(compareNewest);
+  for (const log of newestFirst) {
+    if (isMeaningfulEntrySuccess(log)) {
+      return {
+        outcome: isDeferredSuccess(log) ? 'pending' : 'success',
+        rootCause: null,
+        log,
+      };
+    }
+    if (isFailedStatus(log.status)) {
+      return {
+        outcome: 'failed',
+        rootCause: rootCauseFromExecutionLog(log, 'entry') ?? rootCauseFromLegacyFallback(log.id, log.created_at, 'entry'),
+        log,
+      };
+    }
+  }
+  return null;
+}
+
+function buildTrace(
+  rootCause: ErrorRootCause,
+  logs: EntryExecutionLogLike[],
+  signalStatus: string | null,
+  signalCause: string | null,
+  parsedData: unknown,
+): DiagnosticTraceStep[] {
+  const parserFailed = hasParseFailureEvidence(signalCause, parsedData);
+  const parserSucceeded = hasParseSuccessEvidence(parsedData);
+  const plannedLog = logs.find(log => PLANNING_ACTIONS.has(actionKey(log.action)));
+  const deferredLog = logs.find(isDeferredSuccess);
+  const brokerAttemptLog = logs.find(log => BROKER_ATTEMPT_ACTIONS.has(actionKey(log.action)) && (isSuccessStatus(log.status) || isFailedStatus(log.status)));
+  const latestTerminal = latestMeaningfulAccountOutcome(logs);
+  const outcomeState: DiagnosticTraceStep['state'] = rootCause.status === 'Recovered after retry'
+    ? 'success'
+    : rootCause.status === 'Deferred pending registered' || rootCause.status === 'Recovered with pending accounts' || latestTerminal?.outcome === 'pending'
+      ? 'pending'
+      : 'failed';
+
+  return [
+    { label: 'Signal received', state: signalStatus ? 'success' : 'unknown', detail: signalStatus ? `status: ${signalStatus}` : 'signal row status not recorded' },
+    {
+      label: 'Signal parsed',
+      state: parserFailed ? 'failed' : parserSucceeded ? 'success' : 'unknown',
+      detail: parserFailed ? 'parser failure evidence recorded' : parserSucceeded ? 'verification chain recorded' : 'parser outcome not recorded',
+    },
+    {
+      label: deferredLog ? 'Deferred pending registered' : 'Execution planned',
+      state: deferredLog || plannedLog ? 'success' : 'unknown',
+      detail: deferredLog ? 'waiting for price or pending trigger' : plannedLog ? actionLabel(plannedLog.action) : 'planning evidence not recorded',
+    },
+    {
+      label: 'Broker attempted',
+      state: brokerAttemptLog ? (rootCause.stage === 'Broker execution' && rootCause.status !== 'Recovered after retry' ? 'failed' : 'success') : 'unknown',
+      detail: brokerAttemptLog ? actionLabel(brokerAttemptLog.action) : 'broker-attempt evidence not recorded',
+    },
+    {
+      label: 'Outcome',
+      state: outcomeState,
+      detail: rootCause.status === 'Recovered after retry' && latestTerminal
+        ? `${rootCause.status}; latest terminal status: ${latestTerminal.log.status}`
+        : rootCause.status,
+    },
+  ];
+}
+
+export function extractEntryNotOpenedDiagnostics(
+  signal: Pick<FailedSignalLike, 'status' | 'skip_reason' | 'parsed_data' | 'created_at'>,
+  linkedExecutionLogs: EntryExecutionLogLike[],
+): ErrorDiagnostics {
+  const parsed = (signal.parsed_data ?? {}) as Record<string, unknown>;
+  const verification = parsed._verification as { final?: { skip_reason?: string | null } } | null;
+  const signalCause = signal.skip_reason ?? verification?.final?.skip_reason ?? null;
+  const sortedLogs = linkedExecutionLogs.slice().sort(compareNewest);
+  const grouped = new Map<string, EntryExecutionLogLike[]>();
+
+  for (const log of sortedLogs) {
+    const group = grouped.get(accountKey(log)) ?? [];
+    group.push(log);
+    grouped.set(accountKey(log), group);
+  }
+
+  const accountDiagnostics: AccountDiagnostic[] = [...grouped.values()].map(groupLogs => {
+    const latest = groupLogs[0];
+    const terminal = latestMeaningfulAccountOutcome(groupLogs);
+    return {
+      broker_account_id: latest?.broker_account_id ?? null,
+      broker_label: latest?.broker_label ?? null,
+      outcome: terminal?.outcome ?? 'unknown',
+      rootCause: terminal?.rootCause ?? null,
+      created_at: terminal?.log.created_at ?? latest?.created_at ?? null,
+    };
+  });
+
+  const failedAccounts = accountDiagnostics.filter(a => a.outcome === 'failed' && a.rootCause);
+  const successfulAccounts = accountDiagnostics.filter(a => a.outcome === 'success');
+  const pendingAccounts = accountDiagnostics.filter(a => a.outcome === 'pending');
+  let rootCause: ErrorRootCause;
+
+  if (failedAccounts.length === 1 && failedAccounts[0].rootCause) {
+    rootCause = failedAccounts[0].rootCause;
+  } else if (failedAccounts.length > 1) {
+    const uniqueReasons = new Set(failedAccounts.map(a => a.rootCause?.reason).filter(Boolean));
+    const firstRoot = failedAccounts[0].rootCause ?? rootCauseFromLegacyFallback(null, signal.created_at, 'entry');
+    rootCause = {
+      ...firstRoot,
+      reason: uniqueReasons.size === 1 ? firstRoot.reason : `${failedAccounts.length} broker accounts failed`,
+      explanation: uniqueReasons.size === 1
+        ? firstRoot.explanation
+        : `${failedAccounts.length} linked broker accounts recorded different failure reasons. Review the account-level diagnostics below for the exact cause on each account.`,
+      recommendedAction: uniqueReasons.size === 1 ? firstRoot.recommendedAction : 'Review each failed broker account separately before taking action.',
+    };
+  } else if (pendingAccounts.length > 0) {
+    rootCause = {
+      status: successfulAccounts.length > 0 ? 'Recovered with pending accounts' : 'Deferred pending registered',
+      stage: 'Execution outcome',
+      reason: successfulAccounts.length > 0 ? 'Some broker accounts recovered; some are pending' : 'Deferred pending registered',
+      explanation: 'The latest meaningful linked execution evidence includes deferred-pending entry outcomes. This is not a completed broker-open success until a later entry fire or order-send success is recorded.',
+      recommendedAction: null,
+      retryable: null,
+      userActionRequired: null,
+      safeContext: {},
+      evidence: 'legacy_fallback',
+      evidenceLabel: 'Latest meaningful terminal outcome',
+      sourceLogId: null,
+      created_at: signal.created_at,
+    };
+  } else if (successfulAccounts.length > 0) {
+    rootCause = {
+      status: 'Recovered after retry',
+      stage: 'Execution outcome',
+      reason: successfulAccounts.length === 1 ? 'Recovered after retry' : `${successfulAccounts.length} broker accounts recovered`,
+      explanation: 'The latest meaningful linked execution evidence is completed entry success. Older failed attempts are retained as history but do not define the current account outcome.',
+      recommendedAction: null,
+      retryable: null,
+      userActionRequired: null,
+      safeContext: {},
+      evidence: 'legacy_fallback',
+      evidenceLabel: 'Latest meaningful terminal outcome',
+      sourceLogId: null,
+      created_at: signal.created_at,
+    };
+  } else {
+    rootCause = rootCauseFromLegacyFallback(null, signal.created_at, 'entry');
+  }
+
+  return {
+    rootCause,
+    accountDiagnostics,
+    trace: buildTrace(rootCause, sortedLogs, signal.status, signalCause, signal.parsed_data),
+    selectionRule: 'For each broker account, admin sorts linked trade_execution_logs by created_at descending and uses the latest meaningful terminal outcome: known success/deferred entry actions or failed/error rows. Later success/deferred outcomes supersede older failures; later failures supersede older failures. Informational rows are ignored.',
+  };
 }
 
 /** Best-effort human label for the trade a failed step was about. */
@@ -369,9 +935,10 @@ export interface ExecutionLogLike {
 export function executionLogToErrorItem(r: ExecutionLogLike): ErrorItem {
   const detail = { action: r.action, request_payload: r.request_payload, response_payload: r.response_payload };
   const structured = extractStructuredFailure(r.request_payload, r.response_payload);
+  const rootCause = rootCauseFromExecutionLog(r);
   const { key, label } = categoryFromStructuredFailure(structured, categoryOf('execution', r.action));
   const legacyCause = (r.error_message ?? '').trim() || causeFromRequestPayload(r.request_payload);
-  const cause = structuredCause(structured) ?? legacyCause;
+  const cause = rootCause?.reason ?? structuredCause(structured) ?? legacyCause;
   return {
     id: r.id,
     source: 'execution',
@@ -387,6 +954,24 @@ export function executionLogToErrorItem(r: ExecutionLogLike): ErrorItem {
     broker_label: r.broker_label,
     created_at: r.created_at,
     structured_failure: structured,
+    diagnostics: rootCause
+      ? {
+        rootCause,
+        accountDiagnostics: [{
+          broker_account_id: r.broker_account_id,
+          broker_label: r.broker_label,
+          outcome: 'failed',
+          rootCause,
+          created_at: r.created_at,
+        }],
+        trace: [
+          { label: 'Signal received', state: r.signal_id ? 'success' : 'unknown', detail: r.signal_id ? null : 'no linked signal_id' },
+          { label: 'Execution log recorded', state: 'success', detail: r.action ? actionLabel(r.action) : null },
+          { label: 'Outcome', state: 'failed', detail: rootCause.status },
+        ],
+        selectionRule: 'Execution-log rows use their own request_payload, response_payload, reason_code, skip/failure reason, broker classification, and error_message in that order.',
+      }
+      : null,
   };
 }
 
@@ -401,11 +986,15 @@ export interface FailedSignalLike {
   created_at: string;
 }
 
-export function failedSignalToErrorItem(r: FailedSignalLike): ErrorItem {
+export function failedSignalToErrorItem(r: FailedSignalLike, linkedExecutionLogs: EntryExecutionLogLike[] = []): ErrorItem {
   const parsed = (r.parsed_data ?? {}) as Record<string, unknown>;
   const verification = parsed._verification as { final?: { skip_reason?: string | null } } | null;
-  const cause = r.skip_reason ?? verification?.final?.skip_reason ?? null;
-  const { key, label } = categoryFromSignalFailure(cause, r.parsed_data);
+  const signalCause = r.skip_reason ?? verification?.final?.skip_reason ?? null;
+  const diagnostics = normalizeKey(signalCause) === 'entry_not_opened'
+    ? extractEntryNotOpenedDiagnostics(r, linkedExecutionLogs)
+    : null;
+  const cause = diagnostics?.rootCause.reason ?? signalCause;
+  const { key, label } = categoryFromSignalFailure(signalCause, r.parsed_data);
   return {
     id: r.id,
     source: 'signal',
@@ -422,6 +1011,7 @@ export function failedSignalToErrorItem(r: FailedSignalLike): ErrorItem {
     broker_label: null,
     created_at: r.created_at,
     structured_failure: null,
+    diagnostics,
   };
 }
 

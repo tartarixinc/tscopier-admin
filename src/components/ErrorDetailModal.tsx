@@ -27,7 +27,14 @@ function SeverityBadge({ severity }: { severity: 'transient' | 'major' }) {
 export function ErrorDetailModal({ error, onClose }: ErrorDetailModalProps) {
   const pipeline = useSignalPipeline(error.signal_id);
   const classification = classifyErrorItemSeverity(error);
-  const structuredExplanation: FailureExplanation | null = error.structured_failure
+  const rootCause = error.diagnostics?.rootCause ?? null;
+  const structuredExplanation: FailureExplanation | null = rootCause
+    ? {
+      title: rootCause.reason,
+      explanation: rootCause.explanation,
+      actions: rootCause.recommendedAction ? [rootCause.recommendedAction] : undefined,
+    }
+    : error.structured_failure
     ? {
       title: error.structured_failure.title ?? error.structured_failure.reasonCode ?? 'Trade execution failed',
       explanation: error.structured_failure.explanation ?? 'Structured failure metadata was recorded for this event.',
@@ -45,29 +52,46 @@ export function ErrorDetailModal({ error, onClose }: ErrorDetailModalProps) {
   }, [onClose]);
 
   const detailViews = (() => {
-    if (error.source === 'execution') {
-      const record = error.detail as { request_payload?: unknown; response_payload?: unknown } | null;
+    if (rootCause) {
       return (
         <div className="space-y-3">
-          <JsonViewer data={record?.request_payload ?? null} label="Request payload" />
-          <JsonViewer data={record?.response_payload ?? null} label="Response payload" />
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <SummaryCell label="Status" value={rootCause.status} />
+            <SummaryCell label="Stage" value={rootCause.stage} />
+            <SummaryCell label="Reason" value={rootCause.reason} />
+            <SummaryCell label="Evidence" value={rootCause.evidenceLabel} />
+          </div>
+          <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1">Explanation</p>
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">{rootCause.explanation}</p>
+            {rootCause.recommendedAction && (
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 mt-3 mb-1">Recommended action</p>
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">{rootCause.recommendedAction}</p>
+              </>
+            )}
+          </div>
+          {Object.keys(rootCause.safeContext).length > 0 && (
+            <JsonViewer data={rootCause.safeContext} label="Safe context" />
+          )}
         </div>
       );
     }
     if (error.source === 'signal') {
-      const parsed = (error.detail ?? {}) as Record<string, unknown>;
-      const raw = error.raw_message ?? (typeof parsed.raw_instruction === 'string' ? parsed.raw_instruction : null);
       return (
-        <div className="space-y-3">
-          <JsonViewer data={raw ?? null} label="Raw message" />
-          <JsonViewer data={error.detail ?? null} label="Parsed data" />
-        </div>
+        <p className="text-xs text-slate-500 dark:text-slate-400">
+          Raw Telegram and parsed payload data are not shown in this error view. Use the safe root-cause fields and linked pipeline evidence.
+        </p>
       );
     }
     if (error.source === 'broker') {
       return <JsonViewer data={error.detail ?? null} label="Broker account" collapsed={false} />;
     }
-    return <JsonViewer data={error.detail ?? null} label="Dead letter payload" />;
+    return (
+      <p className="text-xs text-slate-500 dark:text-slate-400">
+        Raw dead-letter payload data is not shown in this error view.
+      </p>
+    );
   })();
 
   return (
@@ -133,8 +157,10 @@ export function ErrorDetailModal({ error, onClose }: ErrorDetailModalProps) {
             </div>
             <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed break-words">{classification.reason}</p>
             <p className="text-[10px] text-slate-400">
-              {error.structured_failure?.retryable === false
-                ? 'This event is marked non-retryable by structured failure metadata.'
+              {rootCause?.retryable === false
+                ? 'This event is marked non-retryable by root-cause metadata.'
+                : error.structured_failure?.retryable === false
+                  ? 'This event is marked non-retryable by structured failure metadata.'
                 : 'Transient = likely self-resolves on retry (timeouts, HTTP 5xx, throttling). Major = likely needs intervention (rejection, config, invalid state).'}
             </p>
           </div>
@@ -155,9 +181,9 @@ export function ErrorDetailModal({ error, onClose }: ErrorDetailModalProps) {
               'text-sm mt-1 break-words whitespace-pre-wrap',
               classification.severity === 'transient' ? 'text-amber-800 dark:text-amber-200' : 'text-error-700 dark:text-error-200'
             )}>
-              {error.cause ?? 'No error message recorded.'}
+              {rootCause ? rootCause.reason : error.cause ?? 'No error message recorded.'}
             </p>
-            {error.structured_failure?.retryable === false && (
+            {(rootCause?.retryable === false || error.structured_failure?.retryable === false) && (
               <p className="text-[10px] mt-2 text-error-700 dark:text-error-200">
                 Retryable: false
               </p>
@@ -184,6 +210,60 @@ export function ErrorDetailModal({ error, onClose }: ErrorDetailModalProps) {
             </div>
           )}
 
+          {error.diagnostics && (
+            <section className="rounded-xl border border-slate-200 dark:border-slate-700 p-4 space-y-4">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Diagnostic trace</h3>
+                <p className="text-[11px] text-slate-400 mt-1">{error.diagnostics.selectionRule}</p>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-5">
+                {error.diagnostics.trace.map(step => (
+                  <div key={step.label} className="rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700/60 px-3 py-2">
+                    <p className="text-xs font-medium text-slate-700 dark:text-slate-200">{step.label}</p>
+                    <Badge
+                      variant={step.state === 'failed' ? 'error' : step.state === 'success' ? 'success' : step.state === 'pending' ? 'warning' : 'muted'}
+                      dot
+                      className="mt-1"
+                    >
+                      {step.state}
+                    </Badge>
+                    {step.detail && <p className="text-[10px] text-slate-400 mt-1 break-words">{step.detail}</p>}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {error.diagnostics && error.diagnostics.accountDiagnostics.length > 0 && (
+            <section className="rounded-xl border border-slate-200 dark:border-slate-700 p-4 space-y-3">
+              <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Broker account outcomes</h3>
+              <div className="space-y-2">
+                {error.diagnostics.accountDiagnostics.map((account, index) => (
+                  <div key={`${account.broker_account_id ?? 'unknown'}-${index}`} className="rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700/60 px-3 py-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-xs font-medium text-slate-700 dark:text-slate-200">
+                        {account.broker_label ?? account.broker_account_id ?? 'Unknown broker account'}
+                      </p>
+                      <Badge variant={account.outcome === 'failed' ? 'error' : account.outcome === 'success' ? 'success' : account.outcome === 'pending' ? 'warning' : 'muted'} dot>
+                        {account.outcome}
+                      </Badge>
+                      {account.created_at && <span className="text-[10px] text-slate-400 ml-auto">{formatDate(account.created_at)}</span>}
+                    </div>
+                    {account.rootCause && (
+                      <div className="mt-2 text-xs text-slate-600 dark:text-slate-300">
+                        <p className="font-medium text-slate-700 dark:text-slate-200">{account.rootCause.reason}</p>
+                        <p className="mt-0.5 leading-relaxed">{account.rootCause.explanation}</p>
+                        {account.rootCause.recommendedAction && (
+                          <p className="mt-1"><span className="font-semibold">Next:</span> {account.rootCause.recommendedAction}</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
           <section>
             <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">What caused it</h3>
             {detailViews}
@@ -195,7 +275,7 @@ export function ErrorDetailModal({ error, onClose }: ErrorDetailModalProps) {
                 <Info className="w-4 h-4 text-primary-500" />
                 Full signal pipeline
               </h3>
-              <SignalPipelineBody {...pipeline} context="ERROR DETAIL MODAL — the administrator opened this from an error report. Priorities: (1) lead with the failure — which stage failed, the exact error message, and the likely root cause; (2) whether the error was recovered (retried and succeeded) or is still failing; (3) only then note latency or model-chain context if it contributed. Do not bury the failure behind pipeline timing." />
+              <SignalPipelineBody {...pipeline} hideRawData context="ERROR DETAIL MODAL - the administrator opened this from an error report. Priorities: (1) lead with the failure using safe root-cause wording - which stage failed and the likely cause; (2) whether the error was recovered (retried and succeeded) or is still failing; (3) only then note latency or model-chain context if it contributed. Do not include raw payloads or arbitrary raw error text." />
             </section>
           )}
         </div>
