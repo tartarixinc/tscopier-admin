@@ -130,6 +130,118 @@ function full(value: unknown): string {
   }
 }
 
+type SafeValue = string | number | boolean | null | SafeValue[] | { [key: string]: SafeValue }
+
+const SAFE_ERROR_CONTEXT_KEYS = new Set([
+  "safe_error_context",
+  "source",
+  "normalizedCategory",
+  "category",
+  "operation",
+  "status",
+  "stage",
+  "reasonCode",
+  "tradeFailureTitle",
+  "explanation",
+  "recommendedAction",
+  "retryable",
+  "userActionRequired",
+  "symbol",
+  "side",
+  "entry",
+  "stopLoss",
+  "takeProfit",
+  "lot",
+  "signalTimestamp",
+  "channelName",
+  "brokerAccountLabel",
+  "ticketReference",
+  "signalStatus",
+  "accountOutcomeSummary",
+  "evidenceLabel",
+  "pipelineTrace",
+  "accountOutcomes",
+  "boundedDiagnostics",
+  "label",
+  "state",
+  "detail",
+  "outcome",
+  "reason",
+  "createdAt",
+  "selectionRule",
+  "severityReason",
+])
+
+function isSensitiveSafeKey(key: string): boolean {
+  return /raw|payload|request|response|error_message|errormessage|brokererror|telegrammessage|token|secret|password|credential|session|auth|authorization|otp|cookie|hash|bearer|api_?key|phone/i.test(key)
+}
+
+function sanitizeSafeContext(value: unknown, depth = 0): SafeValue | null {
+  if (depth > 4) return null
+  if (value == null || typeof value === "boolean") return value as null | boolean
+  if (typeof value === "number") return Number.isFinite(value) ? value : null
+  if (typeof value === "string") {
+    const text = value.trim().replace(/\s+/g, " ")
+    return text ? text.slice(0, 700) : null
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, 20).map((item) => sanitizeSafeContext(item, depth + 1)).filter((item): item is SafeValue => item !== null)
+  }
+  if (typeof value === "object") {
+    const out: { [key: string]: SafeValue } = {}
+    for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+      if (!SAFE_ERROR_CONTEXT_KEYS.has(key)) continue
+      if (isSensitiveSafeKey(key)) continue
+      const sanitized = sanitizeSafeContext(raw, depth + 1)
+      if (sanitized !== null) out[key] = sanitized
+    }
+    return out
+  }
+  return null
+}
+
+async function explainSafeErrorContext(input: unknown): Promise<Response> {
+  const safeContext = sanitizeSafeContext(input)
+  if (!safeContext || typeof safeContext !== "object" || Array.isArray(safeContext) || Object.keys(safeContext).length === 0) {
+    return json({ error: "safe_error_context is empty or invalid" }, 400)
+  }
+
+  const systemPrompt = [
+    "You are the operator assistant for TSCopier admin error diagnostics.",
+    "You receive ONLY a curated safe context object. It does not contain raw Telegram messages, request payloads, response payloads, raw broker errors, credentials, sessions, cookies, API keys, tokens, OTPs, or authorization data.",
+    "Explain what happened, the likely cause, and the recommended investigation or action using only the supplied safe context.",
+    "If the context says Detailed reason unavailable, Safe legacy fallback, or lacks a concrete reason, say that the available evidence is insufficient. Do not invent a broker cause.",
+    "Do not ask for or mention hidden raw payloads. Do not claim facts that are not present in the safe context.",
+    "Use short plain English. Reply with strict JSON: {\"summary\": string, \"anomalies\": string[], \"overall\": \"fast\"|\"normal\"|\"slow\", \"details\": string[]}.",
+  ].join("\n")
+
+  const userPrompt = [
+    "SAFE_ERROR_CONTEXT:",
+    JSON.stringify(safeContext),
+    "Explain for an administrator:",
+    "1. What happened.",
+    "2. Likely cause based only on evidence above.",
+    "3. Recommended investigation or action.",
+  ].join("\n")
+
+  const { content, status, error } = await callOpenAI(systemPrompt, userPrompt)
+  if (error) return json({ error: `OpenAI request failed: ${status} ${error}` }, 502)
+
+  let parsed: { summary?: string; anomalies?: string[]; overall?: string; details?: string[] } = {}
+  try {
+    parsed = JSON.parse(content ?? "{}")
+  } catch {
+    parsed = { summary: content ?? "No explanation returned." }
+  }
+
+  return json({
+    explanation: parsed.summary ?? "No explanation returned.",
+    anomalies: Array.isArray(parsed.anomalies) ? parsed.anomalies : [],
+    overall: ["fast", "normal", "slow"].includes(parsed.overall ?? "") ? parsed.overall : "normal",
+    details: Array.isArray(parsed.details) ? parsed.details : [],
+  })
+}
+
 async function explainSignal(
   supabase: ReturnType<typeof createClient>,
   signalId: string,
@@ -433,6 +545,7 @@ Deno.serve(async (req: Request) => {
     const focusedBrokerAccountId = typeof body?.broker_account_id === "string" ? body.broker_account_id : null
     const logId = typeof body?.log_id === "string" ? body.log_id : null
     const context = typeof body?.context === "string" && body.context.trim() ? body.context.trim() : null
+    const safeErrorContext = body?.safe_error_context ?? null
 
     let report: { category?: string | null; reason?: string | null; symbol?: string | null; direction?: string | null } | null = null
     if (body?.report && typeof body.report === "object") {
@@ -447,9 +560,10 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    if (safeErrorContext) return await explainSafeErrorContext(safeErrorContext)
     if (logId) return await explainLog(supabase, logId)
     if (signalId) return await explainSignal(supabase, signalId, focusedTradeId, focusedBrokerAccountId, report, context)
-    return json({ error: "signal_id or log_id is required" }, 400)
+    return json({ error: "signal_id, log_id, or safe_error_context is required" }, 400)
   } catch (err) {
     return json({ error: err instanceof Error ? err.message : String(err) }, 500)
   }
