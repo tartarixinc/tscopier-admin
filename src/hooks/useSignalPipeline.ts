@@ -42,6 +42,10 @@ export interface LinkedTrade {
   status: string | null;
   profit: number | null;
   entry_price: number | null;
+  sl: number | null;
+  tp: number | null;
+  lot_size: number | null;
+  broker_account_id: string | null;
   broker_label: string | null;
   opened_at: string | null;
 }
@@ -54,6 +58,9 @@ interface LinkedTradeFetchRow {
   status: string | null;
   profit: number | null;
   entry_price: number | null;
+  sl: number | null;
+  tp: number | null;
+  lot_size: number | null;
   broker_account_id: string | null;
   opened_at: string | null;
 }
@@ -126,7 +133,7 @@ export function useSignalPipeline(signalId: string | null): SignalPipelineData {
           .limit(50),
         adminSupabase
           .from('trades')
-          .select('id, metaapi_order_id, symbol, direction, status, profit, entry_price, broker_account_id, opened_at')
+          .select('id, metaapi_order_id, symbol, direction, status, profit, entry_price, sl, tp, lot_size, broker_account_id, opened_at')
           .eq('signal_id', signalId)
           .maybeSingle(),
       ]);
@@ -172,6 +179,10 @@ export function useSignalPipeline(signalId: string | null): SignalPipelineData {
             status: t.status ?? null,
             profit: t.profit ?? null,
             entry_price: t.entry_price ?? null,
+            sl: t.sl ?? null,
+            tp: t.tp ?? null,
+            lot_size: t.lot_size ?? null,
+            broker_account_id: t.broker_account_id ?? null,
             broker_label: brokerLabel,
             opened_at: t.opened_at ?? null,
           });

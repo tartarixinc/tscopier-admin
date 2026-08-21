@@ -2,6 +2,24 @@
 
 ## Changelog
 
+### 2026-08-21 - Admin Errors safe detail restore + safe AI explainer path
+
+- **Context (user request):** restore useful Admin Error Detail operator diagnostics regressed by the recent Errors privacy work, without touching trading logic, the TSCopier worker, bare BUY/SELL behavior, or re-enabling arbitrary raw payload rendering.
+- **`src/components/ErrorDetailModal.tsx`:**
+  - Added a safe `Signal / trade details` section built only from known parsed fields and structured trade rows: symbol, BUY/SELL side, entry/range, SL, TP levels, lot/volume, signal time, channel, broker/account label, operation, ticket/reference, signal status, and account outcome.
+  - Added a safe `Telegram signal summary` that reconstructs the operator-facing signal from parsed fields only. It does not render raw Telegram text or arbitrary `parsed_data` JSON.
+  - Restored an Errors-modal AI action as `Explain with AI`, but it now sends only curated `safe_error_context` instead of using the existing raw signal explainer path.
+- **`supabase/functions/trade-pipeline-explainer/index.ts`:**
+  - Added a new `safe_error_context` mode. It does not query signals, trades, listener events, execution payloads, or raw Telegram messages.
+  - Server-side sanitization keeps only allowlisted keys and drops raw/payload/request/response/error-message/session/auth/token/password/cookie/API-key/OTP/hash/phone-looking fields before calling OpenAI.
+  - Prompt rules require the AI to use only supplied evidence and to say evidence is insufficient for `Detailed reason unavailable` / legacy fallback cases.
+- **`src/lib/errors.ts`:**
+  - Added management-aware status copy for structured execution failures: `Management breakeven failed`, `Take-profit management failed`, `Close failed`, and `Synchronization failed`, while preserving `Trade not opened` only for entry context.
+  - Added structured `INVALID_STOPS` / broker-stops reason support and kept legacy unknown rows neutral as `Detailed reason unavailable`.
+- **`src/hooks/useSignalPipeline.ts`:** included safe linked-trade fields (`sl`, `tp`, `lot_size`, `broker_account_id`) so the Errors modal can show useful trade facts without payloads.
+- **Verification:** `npm.cmd run typecheck` passed; `npm.cmd run lint` passed with 0 errors and 2 pre-existing Fast Refresh warnings; `npm.cmd run build` passed with existing Browserslist/chunk-size warnings; `git -c safe.directory=... diff --check` passed with line-ending warnings only; conflict-marker scan passed; targeted privacy scan confirmed the Errors modal safe AI call uses `safe_error_context` and the full pipeline raw sections remain behind `hideRawData`.
+- **Follow-up:** browser validation could not be completed in this environment because Vite background launch attempts timed out and no localhost server stayed running. Validate on staging in the browser before merge/deploy, especially the AI edge function after deploying the updated Supabase function.
+
 ### 2026-08-19 - Admin Errors continuation audit: parser-success trace made conservative
 
 - **Context (user request):** continue the interrupted admin error-diagnostics blocker fix without reimplementing, resetting, committing, pushing, deploying, migrating, installing packages, or connecting to staging/prod. First audited the existing uncommitted implementation against the CTO checklist.

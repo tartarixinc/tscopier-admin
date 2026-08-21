@@ -422,13 +422,21 @@ function isDeferredSuccess(log: EntryExecutionLogLike): boolean {
   return isSuccessStatus(log.status) && DEFERRED_SUCCESS_ACTIONS.has(actionKey(log.action));
 }
 
-function statusForContext(context: RootCauseContext): string {
-  return context === 'entry' ? 'Trade not opened' : 'Execution failed';
+function statusForContext(context: RootCauseContext, action?: string | null): string {
+  if (context === 'entry') return 'Trade not opened';
+  const key = actionKey(action);
+  if (key === 'mgmt_breakeven' || key === 'auto_be' || key === 'breakeven') return 'Management breakeven failed';
+  if (key.includes('close')) return 'Close failed';
+  if (key.includes('tp') || key.includes('take_profit')) return 'Take-profit management failed';
+  if (key.includes('sync') || key.includes('reconcile')) return 'Synchronization failed';
+  if (key.includes('modify') || key.includes('sl') || key.includes('trailing') || key.includes('management') || key.startsWith('mgmt_')) return 'Management failed';
+  return 'Execution failed';
 }
 
 function stageFromAction(action: string | null | undefined, context: RootCauseContext): string {
   if (context === 'entry') return 'Broker execution';
   const key = actionKey(action);
+  if (key === 'mgmt_breakeven' || key === 'auto_be' || key === 'breakeven') return 'Management breakeven';
   if (key.includes('close')) return 'Close execution';
   if (key.includes('modify') || key.includes('tp') || key.includes('sl') || key.includes('rebalance')) return 'Management execution';
   if (key.includes('sync') || key.includes('reconcile')) return 'Synchronization';
@@ -447,6 +455,7 @@ function titleFromReasonCode(reasonCode: string): string {
 
 function knownReasonTitle(normalizedCode: string, reasonCode: string): string {
   if (['broker_symbol_not_found', 'symbol_not_found', 'broker_symbol_select_failed'].includes(normalizedCode)) return 'Symbol not found';
+  if (['invalid_stops', 'broker_invalid_stops', 'broker_stops_rejected', 'stops_rejected'].includes(normalizedCode)) return 'Invalid stops';
   if (['signal_missing_required_sl', 'missing_required_sl', 'stop_loss_missing'].includes(normalizedCode)) return 'Stop loss missing';
   if (['insufficient_margin', 'broker_insufficient_margin', 'insufficient_funds'].includes(normalizedCode)) return 'Insufficient margin';
   if (['market_closed', 'broker_market_closed'].includes(normalizedCode)) return 'Market closed';
@@ -457,6 +466,9 @@ function knownReasonTitle(normalizedCode: string, reasonCode: string): string {
 function knownReasonExplanation(normalizedCode: string): string {
   if (['broker_symbol_not_found', 'symbol_not_found', 'broker_symbol_select_failed'].includes(normalizedCode)) {
     return 'The requested instrument was not available on this broker account under a recognized symbol.';
+  }
+  if (['invalid_stops', 'broker_invalid_stops', 'broker_stops_rejected', 'stops_rejected'].includes(normalizedCode)) {
+    return 'The broker rejected the requested stop-loss or take-profit levels for this execution action.';
   }
   if (['signal_missing_required_sl', 'missing_required_sl', 'stop_loss_missing'].includes(normalizedCode)) {
     return 'The signal did not include the required stop loss value for this product rule or account configuration.';
@@ -476,6 +488,9 @@ function knownReasonExplanation(normalizedCode: string): string {
 function knownReasonAction(normalizedCode: string): string | null {
   if (['broker_symbol_not_found', 'symbol_not_found', 'broker_symbol_select_failed'].includes(normalizedCode)) {
     return 'Check the account/channel symbol mapping for this broker account.';
+  }
+  if (['invalid_stops', 'broker_invalid_stops', 'broker_stops_rejected', 'stops_rejected'].includes(normalizedCode)) {
+    return 'Review the requested SL/TP against broker stop-distance and current-price rules.';
   }
   if (['signal_missing_required_sl', 'missing_required_sl', 'stop_loss_missing'].includes(normalizedCode)) {
     return 'Review the signal source and only configure a fallback stop loss if product rules allow it.';
@@ -501,7 +516,7 @@ function rootCauseFromReasonCode(
   const hasStructuredCopy = Boolean(structured?.title || structured?.explanation || structured?.recommendedAction);
 
   return {
-    status: statusForContext(context),
+    status: statusForContext(context, action),
     stage: code.startsWith('signal_') ? 'Signal validation' : stageFromAction(action, context),
     reason: structured?.title ?? knownReasonTitle(code, reasonCode),
     explanation: structured?.explanation ?? knownReasonExplanation(code),
@@ -528,7 +543,7 @@ function rootCauseFromStructuredFailure(
   }
 
   return {
-    status: statusForContext(context),
+    status: statusForContext(context, action),
     stage: structured.category?.toLowerCase().includes('signal') ? 'Signal validation' : stageFromAction(action, context),
     reason: structured.title ?? 'Trade execution failed',
     explanation: structured.explanation ?? 'Structured failure metadata was recorded, but no detailed explanation was stored.',
@@ -572,7 +587,7 @@ function rootCauseFromBrokerError(message: string, sourceLogId: string | null, c
   })();
 
   return {
-    status: statusForContext(context),
+    status: statusForContext(context, action),
     stage: stageFromAction(action, context),
     reason: broker.label,
     explanation,
@@ -632,10 +647,10 @@ function categoryFromSignalFailure(cause: string | null, parsedData: unknown): {
   return { key: 'signal_failed_unknown', label: 'Signal failed' };
 }
 
-function rootCauseFromLegacyFallback(sourceLogId: string | null, createdAt: string | null, context: RootCauseContext = 'entry'): ErrorRootCause {
+function rootCauseFromLegacyFallback(sourceLogId: string | null, createdAt: string | null, context: RootCauseContext = 'entry', action?: string | null): ErrorRootCause {
   return {
-    status: statusForContext(context),
-    stage: 'Execution outcome',
+    status: statusForContext(context, action),
+    stage: action ? stageFromAction(action, context) : 'Execution outcome',
     reason: 'Detailed reason unavailable',
     explanation: 'This older event did not store enough structured execution detail to identify the exact cause.',
     recommendedAction: 'Review linked execution attempts and the broker account configuration before taking action.',
@@ -678,7 +693,7 @@ function rootCauseFromExecutionLog(log: EntryExecutionLogLike, context: RootCaus
   if (safeExplicitReason && normalizeKey(safeExplicitReason) !== 'entry_not_opened') {
     const brokerRoot = rootCauseFromBrokerError(safeExplicitReason, log.id, log.created_at, context, log.action);
     return brokerRoot ?? {
-      status: statusForContext(context),
+      status: statusForContext(context, log.action),
       stage: normalizeKey(safeExplicitReason).startsWith('signal_') ? 'Signal validation' : 'Execution planning',
       reason: titleFromReasonCode(safeExplicitReason),
       explanation: 'The execution layer recorded this explicit failure or skip reason for the signal.',
@@ -696,10 +711,10 @@ function rootCauseFromExecutionLog(log: EntryExecutionLogLike, context: RootCaus
   if (log.error_message?.trim()) {
     const errorMessage = log.error_message.trim();
     return rootCauseFromBrokerError(errorMessage, log.id, log.created_at, context, log.action)
-      ?? rootCauseFromLegacyFallback(log.id, log.created_at, context);
+      ?? rootCauseFromLegacyFallback(log.id, log.created_at, context, log.action);
   }
 
-  return null;
+  return rootCauseFromLegacyFallback(log.id, log.created_at, context, log.action);
 }
 
 function logTime(log: EntryExecutionLogLike): number {
