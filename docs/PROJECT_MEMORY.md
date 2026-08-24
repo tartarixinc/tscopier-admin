@@ -2,6 +2,46 @@
 
 ## Changelog
 
+### 2026-08-24 - User support release-gate blockers fixed
+
+- **Context (user request):** fix only the two final Support diagnostics audit blockers. No redesign, worker/trading behavior changes, schema/RLS/auth changes, commit, push, deploy, migration, or package install.
+- **`src/components/user/UserSupportDiagnosticsTab.tsx`:**
+  - Replaced the remaining batched `trades` global `.limit()` with chunked `signal_id` pagination using `.range()` until every linked trade for the current visible signal page is exhausted.
+  - Preserved cancellation checks before and after each paginated trade fetch page so stale Support page/user requests cannot populate current rows.
+  - Finalized raw Telegram/config string sanitization so explicitly labeled sensitive values (`password`, `passwd`, `token`, `session`, `session_string`/`session-string`/`sessionstring`, standalone `Bearer`, `authorization Bearer`, `api_key`/`api-key`/`apikey`, `secret`, `cookie`, `otp`, `credential`) are redacted regardless of value length while ordinary signal content remains visible.
+- **`src/pages/UserDetailPage.tsx`:**
+  - Added a request-generation plus cleanup guard around the main user-detail load so rapid User A -> User B -> User C navigation cannot let older responses overwrite the current profile, summary, counts, trade-report count, or loading state.
+  - Added a loaded-user render guard and immediate user-bound state reset on `userId` changes, so the page shows a loading skeleton instead of rendering the previous user's profile/support summary under the new URL.
+  - Scoped async subscription/invoice email action results to the initiating user and current detail-load generation, so late User A email responses cannot render under User B after navigation.
+- **Validation:** `npm.cmd run typecheck` passed; `npm.cmd run lint` passed with 0 errors and 2 existing Fast Refresh warnings; `npm.cmd run build` passed with existing Browserslist/chunk-size warnings; `git diff --check` passed with line-ending warnings only; conflict-marker scan passed.
+- **Known follow-up:** this Support view still shows stored current account/channel/preset settings only. An authoritative execution-time config snapshot/resolver is still needed before Admin can label historical config as the exact effective config used for a past trade.
+
+### 2026-08-24 - User support diagnostics review blockers fixed
+
+- **Context (user request):** fix only the current Support tab review findings. No redesign, worker/trading/parser/broker behavior changes, schema/RLS/auth changes, commit, push, deploy, migration, or package install.
+- **`src/components/user/UserSupportDiagnosticsTab.tsx`:**
+  - Hardened raw Telegram signal text sanitization so clearly secret-looking values after `password`, `token`, `session`, `session_string`, `authorization Bearer`, `api_key`/`apikey`, `secret`, `cookie`, `otp`, and `credential` labels are redacted while ordinary signal text remains visible.
+  - Extended stored-config sanitization to inspect recursive string values as well as sensitive object keys, so nested values such as `Authorization: Bearer ...` and `password=...` are redacted before reaching `JsonViewer`.
+  - Fixed `entry_not_opened` mixed-account support outcomes by building the account set from both linked execution logs and linked trade rows, then resolving each broker account independently.
+  - Treats only linked trade rows with `open` or `closed` status as proof of successful execution; non-terminal trade rows do not fabricate success.
+  - Replaced the visible-page execution-log global `.limit()` with chunked `signal_id` batch pagination using `.range()` until each current visible chunk is exhausted, preserving evidence for older visible signals without loading all user history.
+
+### 2026-08-24 - Admin user support diagnostics tab + paginated report history
+
+- **Context (user request):** implement an Admin User Detail support/configuration view without changing worker/trading/parser/broker behavior, schema, RLS, deploy state, or production config.
+- **`src/components/user/UserSupportDiagnosticsTab.tsx`:**
+  - Added a lazy-loaded Support tab for user detail that combines user summary, Telegram/broker/channel state, recent signals, exact raw Telegram signal text, parsed symbol/direction/entry/SL/TP, execution outcome, linked trades, broker/account, and stored configuration.
+  - Batches current-page signal correlation by `signal_id` for `trade_execution_logs` and `trades`, and fetches broker/channel/preset config once for the tab.
+  - Shows separate per-broker-account outcomes and uses the existing `/errors` helper path (`failedSignalToErrorItem`, `executionLogToErrorItem`, `errorDisplayForItem`) so structured/root-cause normalization wins over fallback copy.
+  - Labels configuration as `Account setting`, `Channel override`, or `Stored setting`; it deliberately does not call historical config effective unless existing execution records prove the applied value.
+  - Shows raw Telegram signal text where available while hiding secret-looking auth/token/password/session/cookie/API-key/OTP lines and secret config fields; it does not call AI.
+- **`src/components/user/UserActivityTabs.tsx`:**
+  - Added the Support tab as the default user-detail activity tab while preserving existing Signals, Trades, and Copier Logs tabs.
+- **`src/pages/UserDetailPage.tsx`:**
+  - Passed the already-loaded user summary into the Support tab.
+  - Changed `trade_reports` from an all-rows initial fetch to a lazy paginated panel with an exact count, preserving full logical history without silently truncating old reports/errors.
+- **Verification:** `npm.cmd run typecheck`, `npm.cmd run lint`, and `npm.cmd run build` passed in this turn; lint still reports the two existing Fast Refresh warnings.
+
 ### 2026-08-24 - Errors page audit blockers fixed: stale guards + scoped modal copy + broker patterns
 
 - **Context (user request):** address the final read-only audit findings for the `/errors` performance/operator-fallback patch. No commits, pushes, deploys, migrations, package installs, or staging/prod connections.
