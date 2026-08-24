@@ -54,7 +54,7 @@ export function classifyBrokerError(message: string | null | undefined): BrokerE
   const text = (message ?? '').trim();
   if (!text) return OTHER;
 
-  if (/symbol ?select|unknown symbol|not selectable|symbol could not be loaded/i.test(text)) {
+  if (/symbol ?select|symbol not found|unknown symbol|not selectable|symbol could not be loaded/i.test(text)) {
     return classify('symbol_select_failed', 'major', false);
   }
   if (/market.{0,12}closed/i.test(text)) {
@@ -72,7 +72,7 @@ export function classifyBrokerError(message: string | null | undefined): BrokerE
   if (/trade not allowed|trading (disabled|not allowed)|not allowed to trade|auto trading/i.test(text)) {
     return classify('trading_disabled', 'major', false);
   }
-  if (/account (unavailable|not found)|login failed|not logged in|wrong login|invalid login/i.test(text)) {
+  if (/no broker session|broker session (missing|unavailable|not found)|broker verification (failed|failure)|account (unavailable|not found)|login failed|not logged in|wrong login|invalid login/i.test(text)) {
     return classify('account_unavailable', 'major', false);
   }
   if (/http 5\d\d|\b(50[0-9]|51[0-9]|52[0-9]|53[0-9]|54[0-9])\b/i.test(text)) {

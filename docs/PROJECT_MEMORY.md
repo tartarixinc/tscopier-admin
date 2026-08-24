@@ -2,6 +2,79 @@
 
 ## Changelog
 
+### 2026-08-24 - User support release-gate blockers fixed
+
+- **Context (user request):** fix only the two final Support diagnostics audit blockers. No redesign, worker/trading behavior changes, schema/RLS/auth changes, commit, push, deploy, migration, or package install.
+- **`src/components/user/UserSupportDiagnosticsTab.tsx`:**
+  - Replaced the remaining batched `trades` global `.limit()` with chunked `signal_id` pagination using `.range()` until every linked trade for the current visible signal page is exhausted.
+  - Preserved cancellation checks before and after each paginated trade fetch page so stale Support page/user requests cannot populate current rows.
+  - Finalized raw Telegram/config string sanitization so explicitly labeled sensitive values (`password`, `passwd`, `token`, `session`, `session_string`/`session-string`/`sessionstring`, standalone `Bearer`, `authorization Bearer`, `api_key`/`api-key`/`apikey`, `secret`, `cookie`, `otp`, `credential`) are redacted regardless of value length while ordinary signal content remains visible.
+- **`src/pages/UserDetailPage.tsx`:**
+  - Added a request-generation plus cleanup guard around the main user-detail load so rapid User A -> User B -> User C navigation cannot let older responses overwrite the current profile, summary, counts, trade-report count, or loading state.
+  - Added a loaded-user render guard and immediate user-bound state reset on `userId` changes, so the page shows a loading skeleton instead of rendering the previous user's profile/support summary under the new URL.
+  - Scoped async subscription/invoice email action results to the initiating user and current detail-load generation, so late User A email responses cannot render under User B after navigation.
+- **Validation:** `npm.cmd run typecheck` passed; `npm.cmd run lint` passed with 0 errors and 2 existing Fast Refresh warnings; `npm.cmd run build` passed with existing Browserslist/chunk-size warnings; `git diff --check` passed with line-ending warnings only; conflict-marker scan passed.
+- **Known follow-up:** this Support view still shows stored current account/channel/preset settings only. An authoritative execution-time config snapshot/resolver is still needed before Admin can label historical config as the exact effective config used for a past trade.
+
+### 2026-08-24 - User support diagnostics review blockers fixed
+
+- **Context (user request):** fix only the current Support tab review findings. No redesign, worker/trading/parser/broker behavior changes, schema/RLS/auth changes, commit, push, deploy, migration, or package install.
+- **`src/components/user/UserSupportDiagnosticsTab.tsx`:**
+  - Hardened raw Telegram signal text sanitization so clearly secret-looking values after `password`, `token`, `session`, `session_string`, `authorization Bearer`, `api_key`/`apikey`, `secret`, `cookie`, `otp`, and `credential` labels are redacted while ordinary signal text remains visible.
+  - Extended stored-config sanitization to inspect recursive string values as well as sensitive object keys, so nested values such as `Authorization: Bearer ...` and `password=...` are redacted before reaching `JsonViewer`.
+  - Fixed `entry_not_opened` mixed-account support outcomes by building the account set from both linked execution logs and linked trade rows, then resolving each broker account independently.
+  - Treats only linked trade rows with `open` or `closed` status as proof of successful execution; non-terminal trade rows do not fabricate success.
+  - Replaced the visible-page execution-log global `.limit()` with chunked `signal_id` batch pagination using `.range()` until each current visible chunk is exhausted, preserving evidence for older visible signals without loading all user history.
+
+### 2026-08-24 - Admin user support diagnostics tab + paginated report history
+
+- **Context (user request):** implement an Admin User Detail support/configuration view without changing worker/trading/parser/broker behavior, schema, RLS, deploy state, or production config.
+- **`src/components/user/UserSupportDiagnosticsTab.tsx`:**
+  - Added a lazy-loaded Support tab for user detail that combines user summary, Telegram/broker/channel state, recent signals, exact raw Telegram signal text, parsed symbol/direction/entry/SL/TP, execution outcome, linked trades, broker/account, and stored configuration.
+  - Batches current-page signal correlation by `signal_id` for `trade_execution_logs` and `trades`, and fetches broker/channel/preset config once for the tab.
+  - Shows separate per-broker-account outcomes and uses the existing `/errors` helper path (`failedSignalToErrorItem`, `executionLogToErrorItem`, `errorDisplayForItem`) so structured/root-cause normalization wins over fallback copy.
+  - Labels configuration as `Account setting`, `Channel override`, or `Stored setting`; it deliberately does not call historical config effective unless existing execution records prove the applied value.
+  - Shows raw Telegram signal text where available while hiding secret-looking auth/token/password/session/cookie/API-key/OTP lines and secret config fields; it does not call AI.
+- **`src/components/user/UserActivityTabs.tsx`:**
+  - Added the Support tab as the default user-detail activity tab while preserving existing Signals, Trades, and Copier Logs tabs.
+- **`src/pages/UserDetailPage.tsx`:**
+  - Passed the already-loaded user summary into the Support tab.
+  - Changed `trade_reports` from an all-rows initial fetch to a lazy paginated panel with an exact count, preserving full logical history without silently truncating old reports/errors.
+- **Verification:** `npm.cmd run typecheck`, `npm.cmd run lint`, and `npm.cmd run build` passed in this turn; lint still reports the two existing Fast Refresh warnings.
+
+### 2026-08-24 - Errors page audit blockers fixed: stale guards + scoped modal copy + broker patterns
+
+- **Context (user request):** address the final read-only audit findings for the `/errors` performance/operator-fallback patch. No commits, pushes, deploys, migrations, package installs, or staging/prod connections.
+- **`src/pages/ErrorsPage.tsx`:**
+  - Added mount/load/data generation refs so stale base loads and stale linked-log enrichment responses cannot update current rows after a newer load starts, filters/date range change, or the component unmounts.
+  - Added synchronous ref-based enrichment dedupe so visible-row enrichment and modal-open enrichment do not race each other into duplicate linked-log queries for the same signal.
+  - Preserves already-enriched diagnostics across the normal 20s base poll when the same signal row remains present, avoiding recurring enrichment churn for unchanged visible rows.
+  - Fixed the review blocker where fallback `entry_not_opened` diagnostics from `failedSignalToErrorItem(..., [])` were incorrectly treated as completed linked-log enrichment. Completed enrichment is now tracked only by `enrichedSignalIdsRef` after the linked-log fetch path finishes.
+  - Fixed the follow-up review blockers by replacing signal-id-only completion with explicit enrichment state: in-flight ids, completed-with-evidence, completed-no-evidence with a 40s TTL, and failed-with-backoff using the existing 20s poll cadence. Completion is now keyed by a bounded signal evidence fingerprint instead of signal id alone.
+- **`src/components/ErrorDetailModal.tsx`:**
+  - Restored the previous `explainFailure()` fallback for shared uses from Copier Logs, Signals, and Trade Execution Logs.
+  - Added `safeDisplayOnly` as an explicit opt-in used by `/errors` only, keeping `/errors` on the central safe display helper without changing other admin views.
+- **`src/lib/brokerErrors.ts`, `src/lib/errors.ts`:**
+  - Extended the existing broker classifier and structured reason-code normalization for `symbol not found`, `no broker session`, and broker verification failure, plus common known structured broker categories such as unknown ticket, trading disabled, HTTP 5xx, and rate limit.
+- **Verification:** `npm.cmd run typecheck` passed before this entry; full validation pending in this turn.
+
+### 2026-08-24 - Errors page useful legacy fallback copy + deferred linked-log enrichment
+
+- **Context (user request):** urgent `/errors` improvement before standup: make unknown legacy failures operator-useful without fabricating root causes, and stop linked execution-log enrichment from blocking initial page render.
+- **`src/lib/errors.ts`:**
+  - Added a central `errorDisplayForItem()` display helper that returns safe title, reason label, explanation, next action, evidence label, and cause grouping key.
+  - Changed legacy fallback root causes from `Detailed reason unavailable` / `Safe legacy fallback` to operation-specific titles with `Reason not recorded`, preserving known operations such as `No position opened`, `Management modification failed`, `Trade reconciliation failed`, `Order send failed`, `Trade close failed`, `Trade modification failed`, and `Basket protection sync failed`.
+  - Kept existing structured precedence: `trade_failure`, `reason_code`, explicit failure/skip reason, normalized broker classifier, then operation fallback.
+- **`src/pages/ErrorsPage.tsx`:**
+  - Removed the blocking loop that fetched linked execution logs for every `entry_not_opened` failed signal before first render.
+  - Base `/errors` now renders after the four normal source queries plus display-name/broker-label lookups; linked execution-log enrichment runs only for current visible page rows and for an opened row.
+  - Failure-cause grouping now uses the safe display key, so unknown rows group by operation (`No position opened - Reason not recorded`, `Management modification failed - Reason not recorded`, etc.) instead of one generic bucket.
+- **`src/components/ErrorDetailModal.tsx`:**
+  - Uses the same central safe display helper for "Why this error happened" and "What actually happened" instead of falling back to arbitrary `error.cause` text.
+  - Shows `Loading diagnostic evidence...` while supplemental linked-log diagnostics are loading.
+- **Verification:** `npm.cmd run typecheck` passed; `npm.cmd run lint` passed with 0 errors and 2 pre-existing Fast Refresh warnings; `npm.cmd run build` passed with existing Browserslist/chunk-size warnings; `git diff --check` passed with line-ending warnings only; conflict-marker scan passed.
+- **Follow-up:** browser/staging validation still required for live Supabase data. Base execution-log rows still select request/response payload columns because current structured failure evidence is stored there; the newly deferred payload reads are the supplemental linked logs for failed signals.
+
 ### 2026-08-21 - Admin Errors safe detail restore + safe AI explainer path
 
 - **Context (user request):** restore useful Admin Error Detail operator diagnostics regressed by the recent Errors privacy work, without touching trading logic, the TSCopier worker, bare BUY/SELL behavior, or re-enabling arbitrary raw payload rendering.

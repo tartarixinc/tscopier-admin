@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Server, MessageSquare, Zap, TrendingUp, FlaskConical, Mail, Send, ScrollText, ChevronDown } from 'lucide-react';
 import { authSupabase as adminSupabase } from '../lib/adminSupabase';
@@ -7,6 +7,7 @@ import { Card, CardHeader, CardContent } from '../components/ui/Card';
 import { StatusBadge } from '../components/StatusBadge';
 import { Button } from '../components/ui/Button';
 import { UserActivityTabs } from '../components/user/UserActivityTabs';
+import { Pagination } from '../components/DataTable';
 
 interface UserProfile {
   user_id: string;
@@ -104,6 +105,8 @@ interface TgClaimRow {
   linked_at: string | null;
 }
 
+const REPORTED_TRADES_PAGE_SIZE = 25;
+
 function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex items-start gap-4 py-2 border-b border-slate-100 dark:border-slate-700 last:border-0">
@@ -131,11 +134,36 @@ export function UserDetailPage() {
   const [showBrokers, setShowBrokers] = useState(false);
   const [showChannels, setShowChannels] = useState(false);
   const [showReportedTrades, setShowReportedTrades] = useState(false);
+  const [reportedTradesPage, setReportedTradesPage] = useState(1);
+  const [reportedTradesTotal, setReportedTradesTotal] = useState(0);
+  const [reportedTradesLoading, setReportedTradesLoading] = useState(false);
+  const [loadedUserId, setLoadedUserId] = useState<string | null>(null);
+  const userDetailLoadGenerationRef = useRef(0);
+  const mountedRef = useRef(true);
+  const currentUserIdRef = useRef<string | null>(userId ?? null);
 
   const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
   const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
+  currentUserIdRef.current = userId ?? null;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  function canApplyUserAction(actionUserId: string, generation: number): boolean {
+    return mountedRef.current
+      && currentUserIdRef.current === actionUserId
+      && userDetailLoadGenerationRef.current === generation;
+  }
+
   async function sendSubscriptionEmail(campaign: string) {
+    if (!userId) return;
+    const actionUserId = userId;
+    const actionGeneration = userDetailLoadGenerationRef.current;
     setEmailSending(campaign);
     setEmailResult(null);
     setShowEmailMenu(false);
@@ -147,22 +175,27 @@ export function UserDetailPage() {
           'apikey': SUPABASE_ANON_KEY,
           'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
         },
-        body: JSON.stringify({ user_id: userId, campaign }),
+        body: JSON.stringify({ user_id: actionUserId, campaign }),
       });
       const data = await res.json();
+      if (!canApplyUserAction(actionUserId, actionGeneration)) return;
       if (!res.ok) {
         setEmailResult({ type: 'error', message: data.error || 'Failed to send email' });
       } else {
         setEmailResult({ type: 'success', message: `Sent "${campaign.replace(/_/g, ' ')}" email to ${data.email}` });
       }
     } catch (err) {
+      if (!canApplyUserAction(actionUserId, actionGeneration)) return;
       setEmailResult({ type: 'error', message: (err as Error).message });
     } finally {
-      setEmailSending(null);
+      if (canApplyUserAction(actionUserId, actionGeneration)) setEmailSending(null);
     }
   }
 
   async function sendInvoiceDueEmail() {
+    if (!userId) return;
+    const actionUserId = userId;
+    const actionGeneration = userDetailLoadGenerationRef.current;
     setEmailSending('invoice_due');
     setEmailResult(null);
     setShowEmailMenu(false);
@@ -174,9 +207,10 @@ export function UserDetailPage() {
           'apikey': SUPABASE_ANON_KEY,
           'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
         },
-        body: JSON.stringify({ user_id: userId }),
+        body: JSON.stringify({ user_id: actionUserId }),
       });
       const data = await res.json();
+      if (!canApplyUserAction(actionUserId, actionGeneration)) return;
       if (!res.ok) {
         setEmailResult({ type: 'error', message: data.error || 'Failed to send invoice email' });
       } else {
@@ -184,34 +218,55 @@ export function UserDetailPage() {
         setEmailResult({ type: 'success', message: `Sent invoice due email${amountMsg} to ${data.email}` });
       }
     } catch (err) {
+      if (!canApplyUserAction(actionUserId, actionGeneration)) return;
       setEmailResult({ type: 'error', message: (err as Error).message });
     } finally {
-      setEmailSending(null);
+      if (canApplyUserAction(actionUserId, actionGeneration)) setEmailSending(null);
     }
   }
 
   useEffect(() => {
     if (!userId) return;
+    const generation = userDetailLoadGenerationRef.current + 1;
+    userDetailLoadGenerationRef.current = generation;
+    let cancelled = false;
+    const isStale = () => cancelled || userDetailLoadGenerationRef.current !== generation;
+    setLoadedUserId(null);
+    setProfile(null);
+    setSubscription(null);
+    setTelegram(null);
+    setBrokers([]);
+    setChannels([]);
+    setReportedTrades([]);
+    setReportedTradesTotal(0);
+    setReportedTradesPage(1);
+    setReportedTradesLoading(false);
+    setCounts({ signals: 0, trades: 0, logs: 0, backtests: 0 });
+    setEmailSending(null);
+    setEmailResult(null);
+    setShowEmailMenu(false);
+    setLoading(true);
+
     async function load() {
       const [
         { data: prof },
         { data: sub },
         { data: brok },
         { data: chans },
+        { count: reportCount },
         { count: btCount },
         { count: sigCount },
         { count: tradeCount },
         { count: logCount },
         { data: tgSessionRaw },
         { data: tgClaimRaw },
-        { data: reportRows },
         { data: leaseRaw },
       ] = await Promise.all([
         adminSupabase.from('user_profiles').select('*').eq('user_id', userId!).maybeSingle(),
         adminSupabase.from('subscriptions').select('*').eq('user_id', userId!).maybeSingle(),
         adminSupabase.from('broker_accounts').select('id, label, platform, connection_status, last_balance').eq('user_id', userId!),
         adminSupabase.from('telegram_channels').select('id, display_name, channel_username, is_active, last_live_at').eq('user_id', userId!),
-        adminSupabase.from('trade_reports').select('id, symbol, direction, reason, status, created_at').eq('user_id', userId!).order('created_at', { ascending: false }),
+        adminSupabase.from('trade_reports').select('id', { count: 'exact', head: true }).eq('user_id', userId!),
         adminSupabase.from('backtest_runs').select('*', { count: 'exact', head: true }).eq('user_id', userId!),
         adminSupabase.from('signals').select('id', { count: 'exact', head: true }).eq('user_id', userId!),
         adminSupabase.from('trades').select('id', { count: 'exact', head: true }).eq('user_id', userId!),
@@ -221,6 +276,7 @@ export function UserDetailPage() {
         adminSupabase.from('worker_session_leases').select('worker_id, role, expires_at, updated_at').eq('user_id', userId!).order('updated_at', { ascending: false }).limit(1).maybeSingle(),
       ]);
 
+      if (isStale()) return;
       setProfile(prof as UserProfile);
       setSubscription(sub as Subscription);
       const tgSession = tgSessionRaw as TgSessionRow | null;
@@ -240,19 +296,47 @@ export function UserDetailPage() {
       } : null);
       setBrokers((brok ?? []) as BrokerRow[]);
       setChannels((chans ?? []) as ChannelRow[]);
-      setReportedTrades((reportRows ?? []) as TradeReportRow[]);
+      setReportedTradesTotal(reportCount ?? 0);
       setCounts({
         signals: sigCount ?? 0,
         trades: tradeCount ?? 0,
         logs: logCount ?? 0,
         backtests: btCount ?? 0,
       });
+      setLoadedUserId(userId ?? null);
       setLoading(false);
     }
     load();
+
+    return () => { cancelled = true; };
   }, [userId]);
 
-  if (loading) {
+  useEffect(() => {
+    if (!userId || !showReportedTrades) return;
+    let cancelled = false;
+    setReportedTradesLoading(true);
+
+    (async () => {
+      const from = (reportedTradesPage - 1) * REPORTED_TRADES_PAGE_SIZE;
+      const to = from + REPORTED_TRADES_PAGE_SIZE - 1;
+      const { data, count } = await adminSupabase
+        .from('trade_reports')
+        .select('id, symbol, direction, reason, status, created_at', { count: 'exact' })
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .range(from, to);
+      if (cancelled) return;
+      setReportedTrades((data ?? []) as TradeReportRow[]);
+      setReportedTradesTotal(count ?? 0);
+      setReportedTradesLoading(false);
+    })();
+
+    return () => { cancelled = true; };
+  }, [reportedTradesPage, showReportedTrades, userId]);
+
+  const hasLoadedCurrentUser = Boolean(userId) && loadedUserId === userId;
+
+  if (loading || !hasLoadedCurrentUser) {
     return (
       <div className="space-y-4">
         <div className="skeleton h-8 w-48" />
@@ -493,18 +577,28 @@ export function UserDetailPage() {
         <CardHeader>
           <button
             className="flex items-center justify-between w-full gap-2 group"
-            onClick={() => setShowReportedTrades(!showReportedTrades)}
+            onClick={() => {
+              setShowReportedTrades(!showReportedTrades);
+              if (!showReportedTrades) setReportedTradesPage(1);
+            }}
           >
-            <h3 className="text-sm font-semibold">Reported Trades ({reportedTrades.length})</h3>
+            <h3 className="text-sm font-semibold">Reported Trades ({reportedTradesTotal > 0 ? reportedTradesTotal : reportedTrades.length})</h3>
             <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showReportedTrades ? 'rotate-180' : ''}`} />
           </button>
         </CardHeader>
         {showReportedTrades && (
+          <>
           <div className="overflow-x-auto">
             <table className="table-base">
               <thead><tr><th>Symbol</th><th>Direction</th><th>Reason</th><th>Status</th><th>Reported At</th></tr></thead>
               <tbody>
-                {reportedTrades.length === 0 ? (
+                {reportedTradesLoading ? (
+                  Array.from({ length: 4 }).map((_, index) => (
+                    <tr key={index}>
+                      <td colSpan={5} className="px-4 py-3"><div className="skeleton h-4 w-full" /></td>
+                    </tr>
+                  ))
+                ) : reportedTrades.length === 0 ? (
                   <tr><td colSpan={5} className="text-center py-6 text-slate-400">No reported trades</td></tr>
                 ) : reportedTrades.map((r: TradeReportRow) => (
                   <tr key={r.id}>
@@ -518,11 +612,23 @@ export function UserDetailPage() {
               </tbody>
             </table>
           </div>
+          <Pagination
+            page={reportedTradesPage}
+            totalPages={Math.max(1, Math.ceil(reportedTradesTotal / REPORTED_TRADES_PAGE_SIZE))}
+            totalCount={reportedTradesTotal}
+            pageSize={REPORTED_TRADES_PAGE_SIZE}
+            onPageChange={setReportedTradesPage}
+          />
+          </>
         )}
       </Card>
 
       {/* User activity tabs */}
-      <UserActivityTabs userId={profile.user_id} counts={counts} />
+      <UserActivityTabs
+        userId={profile.user_id}
+        counts={counts}
+        supportSummary={{ profile, subscription, telegram, brokers, channels, counts }}
+      />
     </div>
   );
 }

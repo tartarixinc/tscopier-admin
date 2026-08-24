@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { X, User, Crosshair, AlertTriangle, Activity, Info, HelpCircle, Sparkles, MessageSquare } from 'lucide-react';
 import { authSupabase as adminSupabase } from '../lib/adminSupabase';
 import { formatDate, formatNumber } from '../lib/formatters';
-import { classifyErrorItemSeverity, SOURCE_LABELS, type ErrorItem } from '../lib/errors';
+import { classifyErrorItemSeverity, errorDisplayForItem, SOURCE_LABELS, type ErrorItem } from '../lib/errors';
 import { explainFailure, type FailureExplanation } from '../lib/failureExplainer';
 import { useSignalPipeline, type SignalPipelineData } from '../hooks/useSignalPipeline';
 import { SignalPipelineBody } from './pipeline/SignalPipelineBody';
@@ -14,6 +14,8 @@ import clsx from 'clsx';
 
 interface ErrorDetailModalProps {
   error: ErrorItem;
+  diagnosticsLoading?: boolean;
+  safeDisplayOnly?: boolean;
   onClose: () => void;
 }
 
@@ -388,12 +390,18 @@ function SafeAiExplainSection({ context }: { context: SafeAiContext }) {
   );
 }
 
-export function ErrorDetailModal({ error, onClose }: ErrorDetailModalProps) {
+export function ErrorDetailModal({ error, diagnosticsLoading = false, safeDisplayOnly = false, onClose }: ErrorDetailModalProps) {
   const pipeline = useSignalPipeline(error.signal_id);
   const classification = classifyErrorItemSeverity(error);
+  const display = useMemo(() => errorDisplayForItem(error), [error]);
   const safeSummary = useMemo(() => buildSafeSignalTradeSummary(error, pipeline), [error, pipeline]);
   const safeAiContext = useMemo(() => buildSafeAiContext(error, classification, safeSummary), [error, classification, safeSummary]);
   const rootCause = error.diagnostics?.rootCause ?? null;
+  const safeDisplayExplanation: FailureExplanation = {
+    title: display.title,
+    explanation: display.explanation,
+    actions: display.nextAction ? [display.nextAction] : undefined,
+  };
   const structuredExplanation: FailureExplanation | null = rootCause
     ? {
       title: rootCause.reason,
@@ -407,7 +415,7 @@ export function ErrorDetailModal({ error, onClose }: ErrorDetailModalProps) {
       actions: error.structured_failure.recommendedAction ? [error.structured_failure.recommendedAction] : undefined,
     }
     : null;
-  const explanation = structuredExplanation ?? explainFailure(error.cause, error.source);
+  const explanation: FailureExplanation | null = safeDisplayOnly ? safeDisplayExplanation : structuredExplanation ?? explainFailure(error.cause, error.source);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -547,7 +555,7 @@ export function ErrorDetailModal({ error, onClose }: ErrorDetailModalProps) {
               'text-sm mt-1 break-words whitespace-pre-wrap',
               classification.severity === 'transient' ? 'text-amber-800 dark:text-amber-200' : 'text-error-700 dark:text-error-200'
             )}>
-              {rootCause ? rootCause.reason : error.cause ?? 'No error message recorded.'}
+              {safeDisplayOnly ? display.reason : rootCause ? rootCause.reason : error.cause ?? 'No error message recorded.'}
             </p>
             {(rootCause?.retryable === false || error.structured_failure?.retryable === false) && (
               <p className="text-[10px] mt-2 text-error-700 dark:text-error-200">
@@ -567,12 +575,19 @@ export function ErrorDetailModal({ error, onClose }: ErrorDetailModalProps) {
                 <ul className="text-xs text-slate-600 dark:text-slate-300 space-y-1.5 pt-1">
                   {explanation.actions.map((a, i) => (
                     <li key={i} className="flex gap-2">
-                      <span className="text-primary-500 font-bold shrink-0">→</span>
+                      <span className="text-primary-500 font-bold shrink-0">-&gt;</span>
                       <span>{a}</span>
                     </li>
                   ))}
                 </ul>
               )}
+            </div>
+          )}
+
+          {diagnosticsLoading && (
+            <div className="rounded-xl border border-primary-200 dark:border-primary-800 bg-primary-50 dark:bg-primary-900/20 p-4 flex items-center gap-2 text-xs text-primary-700 dark:text-primary-300">
+              <span className="w-3.5 h-3.5 rounded-full border-2 border-primary-200 border-t-primary-600 animate-spin" />
+              Loading diagnostic evidence...
             </div>
           )}
 
