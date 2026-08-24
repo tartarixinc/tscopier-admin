@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { authSupabase as adminSupabase, fetchDisplayNames } from '../lib/adminSupabase';
 import { formatDate, truncate } from '../lib/formatters';
@@ -14,6 +14,7 @@ import { AlertTriangle, Search, Zap, Server, CopyX, BarChart3 } from 'lucide-rea
 import clsx from 'clsx';
 import {
   classifyErrorItemSeverity,
+  errorDisplayForItem,
   extractTradeContext,
   categoryOf,
   executionLogToErrorItem,
@@ -22,17 +23,13 @@ import {
   type ErrorItem,
   type ErrorSource,
 } from '../lib/errors';
-import { failureTitle } from '../lib/failureExplainer';
 import { applyBrokerCategory } from '../lib/brokerErrors';
 
 const PAGE_SIZE = 50;
 const LINKED_LOG_PAGE_SIZE = 1000;
 const LINKED_LOG_SIGNAL_CHUNK_SIZE = 25;
-
-/** Canonical cause key for grouping + filtering. Empty causes collapse to a single bucket. */
-function causeKey(cause: string | null | undefined): string {
-  return (cause ?? '').trim().toLowerCase() || '(no message)';
-}
+const ENRICHMENT_FAILURE_BACKOFF_MS = 20_000;
+const NO_EVIDENCE_TTL_MS = 40_000;
 
 interface ExecutionRow {
   id: string;
@@ -88,15 +85,59 @@ function chunk<T>(values: T[], size: number): T[][] {
   return chunks;
 }
 
-function normalizedKey(value: string | null | undefined): string {
-  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+function itemNeedsLinkedExecutionEvidence(item: ErrorItem): boolean {
+  return item.source === 'signal' && item.categoryKey === 'signal_entry_not_opened';
 }
 
-function signalNeedsLinkedExecutionEvidence(row: SignalRow): boolean {
-  const parsed = (row.parsed_data ?? {}) as Record<string, unknown>;
-  const verification = parsed._verification as { final?: { skip_reason?: string | null } } | null;
-  const cause = row.skip_reason ?? verification?.final?.skip_reason ?? null;
-  return normalizedKey(cause) === 'entry_not_opened';
+type EnrichmentStatus = 'with_evidence' | 'no_evidence';
+
+interface EnrichmentCompletion {
+  fingerprint: string;
+  status: EnrichmentStatus;
+  enrichedAt: number;
+}
+
+interface EnrichmentFailure {
+  fingerprint: string;
+  lastFailureAt: number;
+  failureCount: number;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function stableScalar(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return '';
+}
+
+function signalEvidenceFingerprint(item: ErrorItem): string {
+  const parsed = asRecord(item.detail);
+  const verification = asRecord(parsed?._verification);
+  const final = asRecord(verification?.final);
+  const parts = [
+    item.id,
+    item.created_at ?? '',
+    item.cause ?? '',
+    stableScalar(final?.skip_reason),
+    stableScalar(final?.reason_code ?? final?.reasonCode),
+    stableScalar(final?.failure_reason ?? final?.failureReason),
+    stableScalar(final?.status),
+  ];
+  return parts.join('|');
+}
+
+function completionStillValid(completion: EnrichmentCompletion | undefined, fingerprint: string, now: number): boolean {
+  if (!completion || completion.fingerprint !== fingerprint) return false;
+  if (completion.status === 'with_evidence') return true;
+  return now - completion.enrichedAt < NO_EVIDENCE_TTL_MS;
+}
+
+function failureStillBackedOff(failure: EnrichmentFailure | undefined, fingerprint: string, now: number): boolean {
+  return Boolean(failure && failure.fingerprint === fingerprint && now - failure.lastFailureAt < ENRICHMENT_FAILURE_BACKOFF_MS);
 }
 
 export function ErrorsPage() {
@@ -109,12 +150,33 @@ export function ErrorsPage() {
   const [dateTo, setDateTo] = useState('');
   const [items, setItems] = useState<ErrorItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selectedError, setSelectedError] = useState<ErrorItem | null>(null);
+  const [selectedErrorId, setSelectedErrorId] = useState<string | null>(null);
+  const [enrichedSignalIds, setEnrichedSignalIds] = useState<Set<string>>(() => new Set());
+  const [enrichingSignalIds, setEnrichingSignalIds] = useState<Set<string>>(() => new Set());
   const [page, setPage] = useState(1);
+  const mountedRef = useRef(true);
+  const itemsRef = useRef<ErrorItem[]>([]);
+  const loadGenerationRef = useRef(0);
+  const dataGenerationRef = useRef(0);
+  const enrichmentCompletionsRef = useRef<Map<string, EnrichmentCompletion>>(new Map());
+  const enrichmentFailuresRef = useRef<Map<string, EnrichmentFailure>>(new Map());
+  const enrichingSignalIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      loadGenerationRef.current += 1;
+      dataGenerationRef.current += 1;
+      enrichingSignalIdsRef.current.clear();
+      enrichmentFailuresRef.current.clear();
+    };
+  }, []);
 
   useEffect(() => { setPage(1); }, [categoryFilter, severityFilter, causeFilter, search, dateFrom, dateTo]);
 
   const loadErrors = useCallback(async () => {
+    const loadGeneration = loadGenerationRef.current + 1;
+    loadGenerationRef.current = loadGeneration;
     const from = dateFrom ? `${dateFrom}T00:00:00Z` : null;
     const to = dateTo ? `${dateTo}T23:59:59Z` : null;
 
@@ -162,29 +224,9 @@ export function ErrorsPage() {
 
     const displayNames = await fetchDisplayNames([...userIds]);
 
-    const linkedLogRows: ExecutionRow[] = [];
-    const linkedSignalIds = [...new Set((sigRows ?? []).filter(signalNeedsLinkedExecutionEvidence).map(r => r.id).filter(Boolean))];
-    for (const signalChunk of chunk(linkedSignalIds, LINKED_LOG_SIGNAL_CHUNK_SIZE)) {
-      let fromRow = 0;
-      let hasMore = true;
-      while (hasMore) {
-        const { data } = await adminSupabase
-          .from('trade_execution_logs')
-          .select('id, user_id, signal_id, broker_account_id, action, status, error_message, request_payload, response_payload, created_at')
-          .in('signal_id', signalChunk)
-          .order('created_at', { ascending: false })
-          .range(fromRow, fromRow + LINKED_LOG_PAGE_SIZE - 1);
-        const pageRows = (data ?? []) as ExecutionRow[];
-        linkedLogRows.push(...pageRows);
-        hasMore = pageRows.length === LINKED_LOG_PAGE_SIZE;
-        fromRow += LINKED_LOG_PAGE_SIZE;
-      }
-    }
-
     const brokerIds = [...new Set(
       (execRows ?? [])
         .map(r => r.broker_account_id)
-        .concat(linkedLogRows.map(r => r.broker_account_id))
         .filter(Boolean),
     )];
     const brokerLabels: Record<string, string> = {};
@@ -195,17 +237,6 @@ export function ErrorsPage() {
         .in('id', brokerIds);
       (brokerLabelRows ?? []).forEach(b => { brokerLabels[b.id] = b.label ?? ''; });
     }
-
-    const linkedLogsBySignal = new Map<string, EntryExecutionLogLike[]>();
-    linkedLogRows.forEach(r => {
-      if (!r.signal_id) return;
-      const logs = linkedLogsBySignal.get(r.signal_id) ?? [];
-      logs.push({
-        ...r,
-        broker_label: brokerLabels[r.broker_account_id ?? ''] ?? null,
-      });
-      linkedLogsBySignal.set(r.signal_id, logs);
-    });
 
     const built: ErrorItem[] = [];
 
@@ -222,7 +253,7 @@ export function ErrorsPage() {
       const item = failedSignalToErrorItem({
         ...r,
         user_display_name: displayNames[r.user_id ?? ''] ?? null,
-      }, linkedLogsBySignal.get(r.id) ?? []);
+      });
       built.push(item.diagnostics ? item : { ...item, ...applyBrokerCategory(item, item.cause) });
     });
 
@@ -275,9 +306,162 @@ export function ErrorsPage() {
       built.push({ ...item, ...applyBrokerCategory(item, item.cause) });
     });
 
-    setItems(built);
+    if (!mountedRef.current || loadGenerationRef.current !== loadGeneration) return;
+
+    dataGenerationRef.current += 1;
+    const now = Date.now();
+    const baseById = new Map(built.map(item => [item.id, item]));
+    const completions = new Map<string, EnrichmentCompletion>();
+    for (const [id, completion] of enrichmentCompletionsRef.current) {
+      const item = baseById.get(id);
+      if (!item || !itemNeedsLinkedExecutionEvidence(item)) continue;
+      const fingerprint = signalEvidenceFingerprint(item);
+      if (completionStillValid(completion, fingerprint, now)) completions.set(id, completion);
+    }
+    enrichmentCompletionsRef.current = completions;
+    const failures = new Map<string, EnrichmentFailure>();
+    for (const [id, failure] of enrichmentFailuresRef.current) {
+      const item = baseById.get(id);
+      if (!item || !itemNeedsLinkedExecutionEvidence(item)) continue;
+      const fingerprint = signalEvidenceFingerprint(item);
+      if (failureStillBackedOff(failure, fingerprint, now)) failures.set(id, failure);
+    }
+    enrichmentFailuresRef.current = failures;
+    const previousById = new Map(itemsRef.current.map(item => [item.id, item]));
+    const next = built.map(item => {
+      const previous = previousById.get(item.id);
+      const fingerprint = signalEvidenceFingerprint(item);
+      const completion = enrichmentCompletionsRef.current.get(item.id);
+      const hasValidCompletedLinkedLogEnrichment = completionStillValid(completion, fingerprint, now);
+      if (!hasValidCompletedLinkedLogEnrichment || !previous?.diagnostics || !itemNeedsLinkedExecutionEvidence(item)) return item;
+      return {
+        ...item,
+        cause: previous.cause,
+        diagnostics: previous.diagnostics,
+      };
+    });
+    itemsRef.current = next;
+    setItems(next);
+    setEnrichedSignalIds(new Set(enrichmentCompletionsRef.current.keys()));
+    enrichingSignalIdsRef.current.clear();
+    setEnrichingSignalIds(new Set());
     setLoading(false);
   }, [dateFrom, dateTo]);
+
+  const enrichSignalDiagnostics = useCallback(async (signalIds: string[]) => {
+    const dataGeneration = dataGenerationRef.current;
+    const loadGeneration = loadGenerationRef.current;
+    const itemsById = new Map(itemsRef.current.map(item => [item.id, item]));
+    const now = Date.now();
+    const ids = [...new Set(signalIds)].filter(id => {
+      if (enrichingSignalIdsRef.current.has(id)) return false;
+      const item = itemsById.get(id);
+      if (!item || !itemNeedsLinkedExecutionEvidence(item)) return false;
+      const fingerprint = signalEvidenceFingerprint(item);
+      if (completionStillValid(enrichmentCompletionsRef.current.get(id), fingerprint, now)) return false;
+      if (failureStillBackedOff(enrichmentFailuresRef.current.get(id), fingerprint, now)) return false;
+      return true;
+    });
+    if (ids.length === 0) return;
+
+    enrichingSignalIdsRef.current = new Set([...enrichingSignalIdsRef.current, ...ids]);
+    setEnrichingSignalIds(prev => new Set([...prev, ...ids]));
+    try {
+      const linkedLogRows: ExecutionRow[] = [];
+      for (const signalChunk of chunk(ids, LINKED_LOG_SIGNAL_CHUNK_SIZE)) {
+        let fromRow = 0;
+        let hasMore = true;
+        while (hasMore) {
+          const { data, error } = await adminSupabase
+            .from('trade_execution_logs')
+            .select('id, user_id, signal_id, broker_account_id, action, status, error_message, request_payload, response_payload, created_at')
+            .in('signal_id', signalChunk)
+            .order('created_at', { ascending: false })
+            .range(fromRow, fromRow + LINKED_LOG_PAGE_SIZE - 1);
+          if (error) throw error;
+          const pageRows = (data ?? []) as ExecutionRow[];
+          linkedLogRows.push(...pageRows);
+          hasMore = pageRows.length === LINKED_LOG_PAGE_SIZE;
+          fromRow += LINKED_LOG_PAGE_SIZE;
+        }
+      }
+
+      const brokerIds = [...new Set(linkedLogRows.map(r => r.broker_account_id).filter(Boolean))];
+      const brokerLabels: Record<string, string> = {};
+      if (brokerIds.length > 0) {
+        const { data: brokerLabelRows, error } = await adminSupabase
+          .from('broker_accounts')
+          .select('id, label')
+          .in('id', brokerIds);
+        if (error) throw error;
+        (brokerLabelRows ?? []).forEach(b => { brokerLabels[b.id] = b.label ?? ''; });
+      }
+
+      const linkedLogsBySignal = new Map<string, EntryExecutionLogLike[]>();
+      linkedLogRows.forEach(r => {
+        if (!r.signal_id) return;
+        const logs = linkedLogsBySignal.get(r.signal_id) ?? [];
+        logs.push({
+          ...r,
+          broker_label: brokerLabels[r.broker_account_id ?? ''] ?? null,
+        });
+        linkedLogsBySignal.set(r.signal_id, logs);
+      });
+
+      if (!mountedRef.current || dataGenerationRef.current !== dataGeneration || loadGenerationRef.current !== loadGeneration) return;
+
+      const completedAt = Date.now();
+      const next = itemsRef.current.map(item => {
+        if (!ids.includes(item.id) || !itemNeedsLinkedExecutionEvidence(item)) return item;
+        const logs = linkedLogsBySignal.get(item.id) ?? [];
+        const enriched = failedSignalToErrorItem({
+          id: item.id,
+          user_id: item.user_id,
+          user_display_name: item.user_display_name,
+          status: 'failed',
+          skip_reason: 'entry_not_opened',
+          raw_message: item.raw_message ?? null,
+          parsed_data: item.detail,
+          created_at: item.created_at ?? '',
+        }, logs);
+        enrichmentCompletionsRef.current.set(item.id, {
+          fingerprint: signalEvidenceFingerprint(item),
+          status: logs.length > 0 ? 'with_evidence' : 'no_evidence',
+          enrichedAt: completedAt,
+        });
+        enrichmentFailuresRef.current.delete(item.id);
+        return enriched.diagnostics ? enriched : { ...enriched, ...applyBrokerCategory(enriched, enriched.cause) };
+      });
+      itemsRef.current = next;
+      setItems(next);
+      setEnrichedSignalIds(new Set(enrichmentCompletionsRef.current.keys()));
+    } catch (error) {
+      console.error('Failed to enrich error diagnostics', error);
+      if (mountedRef.current && dataGenerationRef.current === dataGeneration && loadGenerationRef.current === loadGeneration) {
+        const failedAt = Date.now();
+        for (const id of ids) {
+          const item = itemsRef.current.find(candidate => candidate.id === id);
+          if (!item) continue;
+          const previous = enrichmentFailuresRef.current.get(id);
+          const fingerprint = signalEvidenceFingerprint(item);
+          enrichmentFailuresRef.current.set(id, {
+            fingerprint,
+            lastFailureAt: failedAt,
+            failureCount: previous?.fingerprint === fingerprint ? previous.failureCount + 1 : 1,
+          });
+        }
+      }
+    } finally {
+      if (mountedRef.current && dataGenerationRef.current === dataGeneration && loadGenerationRef.current === loadGeneration) {
+        ids.forEach(id => enrichingSignalIdsRef.current.delete(id));
+        setEnrichingSignalIds(prev => {
+          const next = new Set(prev);
+          ids.forEach(id => next.delete(id));
+          return next;
+        });
+      }
+    }
+  }, []);
 
   useEffect(() => {
     loadErrors();
@@ -293,12 +477,13 @@ export function ErrorsPage() {
         const sev = classifyErrorItemSeverity(item).severity;
         if (sev !== severityFilter) return false;
       }
-      if (causeFilter && causeKey(item.cause) !== causeFilter) return false;
+      const display = errorDisplayForItem(item);
+      if (causeFilter && display.causeKey !== causeFilter) return false;
       if (term) {
         const user = item.user_display_name?.toLowerCase() ?? '';
         const userId = item.user_id?.toLowerCase() ?? '';
         const trade = item.trade_context?.toLowerCase() ?? '';
-        const cause = item.cause?.toLowerCase() ?? '';
+        const cause = `${display.title} ${display.reason}`.toLowerCase();
         if (!user.includes(term) && !userId.includes(term) && !trade.includes(term) && !cause.includes(term)) return false;
       }
       return true;
@@ -306,34 +491,24 @@ export function ErrorsPage() {
   }, [items, categoryFilter, severityFilter, causeFilter, search]);
 
   const causeBreakdown = useMemo(() => {
-    const byCause = new Map<string, { cause: string; count: number; transient: number; major: number; sources: Set<ErrorSource>; diagnosticTitle: string | null }>();
+    const byCause = new Map<string, { reason: string; count: number; transient: number; major: number; title: string }>();
     filtered.forEach(item => {
-      const key = causeKey(item.cause);
+      const display = errorDisplayForItem(item);
+      const key = display.causeKey;
       const entry = byCause.get(key) ?? {
-        cause: (item.cause ?? '').trim() || '(no message)',
+        reason: display.reason,
         count: 0,
         transient: 0,
         major: 0,
-        sources: new Set<ErrorSource>(),
-        diagnosticTitle: item.diagnostics ? `${item.categoryLabel} - ${item.diagnostics.rootCause.reason}` : null,
+        title: display.title,
       };
       entry.count += 1;
-      entry.sources.add(item.source);
-      if (!entry.diagnosticTitle && item.diagnostics) entry.diagnosticTitle = `${item.categoryLabel} - ${item.diagnostics.rootCause.reason}`;
       if (classifyErrorItemSeverity(item).severity === 'transient') entry.transient += 1;
       else entry.major += 1;
       byCause.set(key, entry);
     });
     return [...byCause.entries()]
-      .map(([key, v]) => {
-        let title: string | null = v.diagnosticTitle;
-        for (const source of v.sources) {
-          if (title) break;
-          title = failureTitle(v.cause, source);
-          if (title) break;
-        }
-        return { ...v, key, title };
-      })
+      .map(([key, v]) => ({ ...v, key }))
       .sort((a, b) => b.count - a.count);
   }, [filtered]);
 
@@ -351,6 +526,31 @@ export function ErrorsPage() {
 
   const paged = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
+  const selectedError = useMemo(
+    () => selectedErrorId ? items.find(item => item.id === selectedErrorId) ?? null : null,
+    [items, selectedErrorId],
+  );
+
+  const visibleSignalIdsNeedingEvidence = useMemo(
+    () => paged
+      .filter(itemNeedsLinkedExecutionEvidence)
+      .map(item => item.id)
+      .filter(id => !enrichedSignalIds.has(id) && !enrichingSignalIds.has(id)),
+    [paged, enrichedSignalIds, enrichingSignalIds],
+  );
+
+  useEffect(() => {
+    if (!loading && visibleSignalIdsNeedingEvidence.length > 0) {
+      void enrichSignalDiagnostics(visibleSignalIdsNeedingEvidence);
+    }
+  }, [loading, visibleSignalIdsNeedingEvidence, enrichSignalDiagnostics]);
+
+  useEffect(() => {
+    if (!loading && selectedError && itemNeedsLinkedExecutionEvidence(selectedError) && !enrichedSignalIds.has(selectedError.id) && !enrichingSignalIds.has(selectedError.id)) {
+      void enrichSignalDiagnostics([selectedError.id]);
+    }
+  }, [loading, selectedError, enrichedSignalIds, enrichingSignalIds, enrichSignalDiagnostics]);
+
   const allCategories = useMemo(() => {
     const seen = new Map<string, string>();
     items.forEach(i => { if (!seen.has(i.categoryKey)) seen.set(i.categoryKey, i.categoryLabel); });
@@ -365,13 +565,11 @@ export function ErrorsPage() {
   };
 
   const causeTitleFor = (item: ErrorItem): string | null => {
-    if (item.diagnostics) return `${item.categoryLabel} - ${item.diagnostics.rootCause.reason}`;
-    return failureTitle(item.cause, item.source);
+    return errorDisplayForItem(item).title;
   };
 
   const causeSubtitleFor = (item: ErrorItem): string => {
-    if (item.diagnostics) return item.diagnostics.rootCause.evidenceLabel;
-    return item.cause ?? '(no message)';
+    return errorDisplayForItem(item).reason;
   };
 
   return (
@@ -445,8 +643,8 @@ export function ErrorsPage() {
                   )}
                 >
                   <div className="min-w-0 flex-1">
-                    {c.title && <p className="text-sm font-medium text-slate-800 dark:text-slate-100 truncate">{c.title}</p>}
-                    <p className="text-xs text-slate-400 font-mono truncate">{c.cause}</p>
+                    <p className="text-sm font-medium text-slate-800 dark:text-slate-100 truncate">{c.title}</p>
+                    <p className="text-xs text-slate-400 truncate">{c.reason}</p>
                   </div>
                   <div className="flex items-center gap-3 shrink-0">
                     <div className="hidden sm:block w-40 h-1.5 rounded-full bg-slate-100 dark:bg-slate-700 overflow-hidden">
@@ -521,7 +719,7 @@ export function ErrorsPage() {
                 {paged.map(item => {
                   const severity = classifyErrorItemSeverity(item).severity;
                   return (
-                    <tr key={item.id} onClick={() => setSelectedError(item)} className="cursor-pointer">
+                    <tr key={item.id} onClick={() => setSelectedErrorId(item.id)} className="cursor-pointer">
                       <td>
                         <span className="flex items-center gap-1.5 text-xs text-slate-500">
                           <span className="text-primary-500">{sourceIcon(item.source)}</span>
@@ -561,7 +759,12 @@ export function ErrorsPage() {
       )}
 
       {selectedError && (
-        <ErrorDetailModal error={selectedError} onClose={() => setSelectedError(null)} />
+        <ErrorDetailModal
+          error={selectedError}
+          diagnosticsLoading={itemNeedsLinkedExecutionEvidence(selectedError) && enrichingSignalIds.has(selectedError.id)}
+          safeDisplayOnly
+          onClose={() => setSelectedErrorId(null)}
+        />
       )}
     </div>
   );

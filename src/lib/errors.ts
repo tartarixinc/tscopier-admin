@@ -84,6 +84,15 @@ export interface ErrorItem {
   diagnostics?: ErrorDiagnostics | null;
 }
 
+export interface ErrorDisplay {
+  title: string;
+  reason: string;
+  explanation: string;
+  nextAction: string | null;
+  evidenceLabel: string | null;
+  causeKey: string;
+}
+
 const MAJOR_PATTERNS: RegExp[] = [
   /invalid stops/i,
   /invalid/i,
@@ -422,26 +431,93 @@ function isDeferredSuccess(log: EntryExecutionLogLike): boolean {
   return isSuccessStatus(log.status) && DEFERRED_SUCCESS_ACTIONS.has(actionKey(log.action));
 }
 
-function statusForContext(context: RootCauseContext, action?: string | null): string {
-  if (context === 'entry') return 'Trade not opened';
+interface OperationFallback {
+  title: string;
+  stage: string;
+  explanation: string;
+  nextAction: string | null;
+}
+
+function operationFallback(context: RootCauseContext, action?: string | null): OperationFallback {
   const key = actionKey(action);
-  if (key === 'mgmt_breakeven' || key === 'auto_be' || key === 'breakeven') return 'Management breakeven failed';
-  if (key.includes('close')) return 'Close failed';
-  if (key.includes('tp') || key.includes('take_profit')) return 'Take-profit management failed';
-  if (key.includes('sync') || key.includes('reconcile')) return 'Synchronization failed';
-  if (key.includes('modify') || key.includes('sl') || key.includes('trailing') || key.includes('management') || key.startsWith('mgmt_')) return 'Management failed';
-  return 'Execution failed';
+  if (context === 'entry') {
+    return {
+      title: 'No position opened',
+      stage: 'Broker execution',
+      explanation: 'The signal was processed but the stored execution record does not contain enough information to identify why no broker position was opened.',
+      nextAction: 'Review linked execution attempts and broker account state.',
+    };
+  }
+  if (key.includes('reconcile')) {
+    return {
+      title: 'Trade reconciliation failed',
+      stage: 'Reconciliation',
+      explanation: 'TScopier attempted to reconcile stored trade state with broker state, but this older execution record did not preserve the exact rejection or mismatch reason.',
+      nextAction: 'Review the linked trade, broker account state, and latest reconciliation attempt.',
+    };
+  }
+  if (key.includes('basket') && (key.includes('tp') || key.includes('sl') || key.includes('sync') || key.includes('rebalance') || key.includes('modify'))) {
+    return {
+      title: 'Basket protection sync failed',
+      stage: 'Basket protection sync',
+      explanation: 'TScopier attempted to synchronize basket stop-loss or take-profit protection, but this older execution record did not preserve the broker rejection reason.',
+      nextAction: 'Review the basket trades and broker account state before changing protection levels.',
+    };
+  }
+  if (key === 'order_send' || key === 'open_trade' || key === 'virtual_pending_fired') {
+    return {
+      title: 'Order send failed',
+      stage: 'Broker execution',
+      explanation: 'TScopier attempted to send an order to the broker, but this older execution record did not preserve the broker rejection reason.',
+      nextAction: 'Review the linked execution attempt and broker account state.',
+    };
+  }
+  if (key === 'order_close' || key === 'close_trade' || key.includes('close')) {
+    return {
+      title: 'Trade close failed',
+      stage: 'Close execution',
+      explanation: 'TScopier attempted to close an existing trade, but this older execution record did not preserve the broker rejection reason.',
+      nextAction: 'Confirm the broker ticket still exists and review the account state.',
+    };
+  }
+  if (key === 'mgmt_modify' || key === 'mgmt_modify_broker_summary' || key.startsWith('mgmt_') || key.includes('management')) {
+    return {
+      title: 'Management modification failed',
+      stage: 'Management execution',
+      explanation: 'TScopier attempted to update an existing trade or basket, but this older execution record did not preserve the broker rejection reason.',
+      nextAction: 'Review the linked execution attempts and current broker account state.',
+    };
+  }
+  if (key === 'order_modify' || key.includes('modify') || key.includes('sl') || key.includes('tp') || key.includes('trailing')) {
+    return {
+      title: 'Trade modification failed',
+      stage: 'Management execution',
+      explanation: 'TScopier attempted to modify an existing trade, but this older execution record did not preserve the broker rejection reason.',
+      nextAction: 'Review the current broker ticket, SL/TP values, and account state.',
+    };
+  }
+  if (key.includes('sync')) {
+    return {
+      title: 'Synchronization failed',
+      stage: 'Synchronization',
+      explanation: 'TScopier attempted to synchronize trade state, but this older execution record did not preserve the exact failure reason.',
+      nextAction: 'Review the linked trade and broker account state.',
+    };
+  }
+  return {
+    title: 'Execution failed',
+    stage: 'Execution',
+    explanation: 'TScopier recorded an execution failure, but this older record did not preserve the exact reason.',
+    nextAction: 'Review linked execution attempts and account state.',
+  };
+}
+
+function statusForContext(context: RootCauseContext, action?: string | null): string {
+  return operationFallback(context, action).title;
 }
 
 function stageFromAction(action: string | null | undefined, context: RootCauseContext): string {
-  if (context === 'entry') return 'Broker execution';
-  const key = actionKey(action);
-  if (key === 'mgmt_breakeven' || key === 'auto_be' || key === 'breakeven') return 'Management breakeven';
-  if (key.includes('close')) return 'Close execution';
-  if (key.includes('modify') || key.includes('tp') || key.includes('sl') || key.includes('rebalance')) return 'Management execution';
-  if (key.includes('sync') || key.includes('reconcile')) return 'Synchronization';
-  if (key.includes('order') || key.includes('open')) return 'Broker execution';
-  return 'Execution';
+  return operationFallback(context, action).stage;
 }
 
 function titleFromReasonCode(reasonCode: string): string {
@@ -459,6 +535,11 @@ function knownReasonTitle(normalizedCode: string, reasonCode: string): string {
   if (['signal_missing_required_sl', 'missing_required_sl', 'stop_loss_missing'].includes(normalizedCode)) return 'Stop loss missing';
   if (['insufficient_margin', 'broker_insufficient_margin', 'insufficient_funds'].includes(normalizedCode)) return 'Insufficient margin';
   if (['market_closed', 'broker_market_closed'].includes(normalizedCode)) return 'Market closed';
+  if (['trading_disabled', 'broker_trading_disabled', 'trade_not_allowed'].includes(normalizedCode)) return 'Trading disabled';
+  if (['unknown_ticket', 'broker_unknown_ticket'].includes(normalizedCode)) return 'Unknown ticket';
+  if (['no_broker_session', 'broker_session_unavailable', 'broker_verification_failed', 'broker_verification_failure'].includes(normalizedCode)) return 'Broker session unavailable';
+  if (['http_5xx', 'broker_http_5xx', 'broker_server_error'].includes(normalizedCode)) return 'HTTP 5xx';
+  if (['rate_limit', 'broker_rate_limit', 'too_many_requests'].includes(normalizedCode)) return 'Rate limited';
   if (['broker_timeout', 'timeout', 'broker_request_timeout'].includes(normalizedCode)) return 'Broker timeout';
   return titleFromReasonCode(reasonCode);
 }
@@ -478,6 +559,21 @@ function knownReasonExplanation(normalizedCode: string): string {
   }
   if (['market_closed', 'broker_market_closed'].includes(normalizedCode)) {
     return 'The broker market for this instrument was closed when execution was attempted.';
+  }
+  if (['trading_disabled', 'broker_trading_disabled', 'trade_not_allowed'].includes(normalizedCode)) {
+    return 'The broker account or terminal was not allowed to trade at the time of execution.';
+  }
+  if (['unknown_ticket', 'broker_unknown_ticket'].includes(normalizedCode)) {
+    return 'The broker did not recognize the ticket referenced by the execution action.';
+  }
+  if (['no_broker_session', 'broker_session_unavailable', 'broker_verification_failed', 'broker_verification_failure'].includes(normalizedCode)) {
+    return 'The broker session was unavailable or could not be verified when execution was attempted.';
+  }
+  if (['http_5xx', 'broker_http_5xx', 'broker_server_error'].includes(normalizedCode)) {
+    return 'The broker platform returned a server-side HTTP error during execution.';
+  }
+  if (['rate_limit', 'broker_rate_limit', 'too_many_requests'].includes(normalizedCode)) {
+    return 'The broker or bridge throttled the request.';
   }
   if (['broker_timeout', 'timeout', 'broker_request_timeout'].includes(normalizedCode)) {
     return 'The broker request did not complete before the timeout recorded by the execution layer.';
@@ -501,7 +597,75 @@ function knownReasonAction(normalizedCode: string): string | null {
   if (['market_closed', 'broker_market_closed'].includes(normalizedCode)) {
     return 'Wait until the market is open, then process a new valid signal.';
   }
+  if (['trading_disabled', 'broker_trading_disabled', 'trade_not_allowed'].includes(normalizedCode)) {
+    return 'Confirm the account is connected and automated trading is enabled.';
+  }
+  if (['unknown_ticket', 'broker_unknown_ticket'].includes(normalizedCode)) {
+    return 'Confirm the broker ticket still exists before retrying the management action.';
+  }
+  if (['no_broker_session', 'broker_session_unavailable', 'broker_verification_failed', 'broker_verification_failure'].includes(normalizedCode)) {
+    return 'Reconnect or verify the broker account before retrying.';
+  }
   return null;
+}
+
+function displayKey(title: string, reason: string): string {
+  return `${normalizeKey(title) || 'unknown'}:${normalizeKey(reason) || 'unknown'}`;
+}
+
+export function errorDisplayForItem(item: ErrorItem): ErrorDisplay {
+  const rootCause = item.diagnostics?.rootCause ?? null;
+  if (rootCause) {
+    return {
+      title: rootCause.status,
+      reason: rootCause.reason,
+      explanation: rootCause.explanation,
+      nextAction: rootCause.recommendedAction,
+      evidenceLabel: rootCause.evidenceLabel,
+      causeKey: displayKey(rootCause.status, rootCause.reason),
+    };
+  }
+
+  if (item.structured_failure) {
+    const reason = item.structured_failure.title
+      ?? item.structured_failure.reasonCode
+      ?? 'Structured trade failure';
+    const title = item.categoryLabel || 'Execution failed';
+    return {
+      title,
+      reason,
+      explanation: item.structured_failure.explanation ?? 'Structured failure metadata was recorded, but no detailed explanation was stored.',
+      nextAction: item.structured_failure.recommendedAction,
+      evidenceLabel: 'Structured trade_failure',
+      causeKey: displayKey(title, reason),
+    };
+  }
+
+  const broker = classifyBrokerError(item.cause);
+  if (broker.category !== 'other') {
+    const root = rootCauseFromBrokerError(item.cause ?? broker.label, null, item.created_at, 'execution', null);
+    const title = item.categoryLabel || 'Broker error';
+    return {
+      title,
+      reason: broker.label,
+      explanation: root?.explanation ?? 'The error matched a known broker failure category.',
+      nextAction: root?.recommendedAction ?? null,
+      evidenceLabel: 'Normalized broker error',
+      causeKey: displayKey(title, broker.label),
+    };
+  }
+
+  const safeExplicit = safeLegacyReasonKey(item.cause);
+  const reason = safeExplicit ? titleFromReasonCode(safeExplicit) : 'Reason not recorded';
+  const title = item.categoryLabel || SOURCE_LABELS[item.source];
+  return {
+    title,
+    reason,
+    explanation: 'The stored admin row identifies what failed, but it does not contain a safe normalized root cause.',
+    nextAction: 'Review the linked source record and account state before taking action.',
+    evidenceLabel: safeExplicit ? 'Explicit failure_reason / skip_reason' : 'Reason not recorded',
+    causeKey: displayKey(title, reason),
+  };
 }
 
 function rootCauseFromReasonCode(
@@ -648,17 +812,18 @@ function categoryFromSignalFailure(cause: string | null, parsedData: unknown): {
 }
 
 function rootCauseFromLegacyFallback(sourceLogId: string | null, createdAt: string | null, context: RootCauseContext = 'entry', action?: string | null): ErrorRootCause {
+  const fallback = operationFallback(context, action);
   return {
-    status: statusForContext(context, action),
-    stage: action ? stageFromAction(action, context) : 'Execution outcome',
-    reason: 'Detailed reason unavailable',
-    explanation: 'This older event did not store enough structured execution detail to identify the exact cause.',
-    recommendedAction: 'Review linked execution attempts and the broker account configuration before taking action.',
+    status: fallback.title,
+    stage: fallback.stage,
+    reason: 'Reason not recorded',
+    explanation: fallback.explanation,
+    recommendedAction: fallback.nextAction,
     retryable: null,
     userActionRequired: null,
     safeContext: {},
     evidence: 'legacy_fallback',
-    evidenceLabel: 'Safe legacy fallback',
+    evidenceLabel: 'Reason not recorded',
     sourceLogId,
     created_at: createdAt,
   };

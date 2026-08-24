@@ -2,6 +2,39 @@
 
 ## Changelog
 
+### 2026-08-24 - Errors page audit blockers fixed: stale guards + scoped modal copy + broker patterns
+
+- **Context (user request):** address the final read-only audit findings for the `/errors` performance/operator-fallback patch. No commits, pushes, deploys, migrations, package installs, or staging/prod connections.
+- **`src/pages/ErrorsPage.tsx`:**
+  - Added mount/load/data generation refs so stale base loads and stale linked-log enrichment responses cannot update current rows after a newer load starts, filters/date range change, or the component unmounts.
+  - Added synchronous ref-based enrichment dedupe so visible-row enrichment and modal-open enrichment do not race each other into duplicate linked-log queries for the same signal.
+  - Preserves already-enriched diagnostics across the normal 20s base poll when the same signal row remains present, avoiding recurring enrichment churn for unchanged visible rows.
+  - Fixed the review blocker where fallback `entry_not_opened` diagnostics from `failedSignalToErrorItem(..., [])` were incorrectly treated as completed linked-log enrichment. Completed enrichment is now tracked only by `enrichedSignalIdsRef` after the linked-log fetch path finishes.
+  - Fixed the follow-up review blockers by replacing signal-id-only completion with explicit enrichment state: in-flight ids, completed-with-evidence, completed-no-evidence with a 40s TTL, and failed-with-backoff using the existing 20s poll cadence. Completion is now keyed by a bounded signal evidence fingerprint instead of signal id alone.
+- **`src/components/ErrorDetailModal.tsx`:**
+  - Restored the previous `explainFailure()` fallback for shared uses from Copier Logs, Signals, and Trade Execution Logs.
+  - Added `safeDisplayOnly` as an explicit opt-in used by `/errors` only, keeping `/errors` on the central safe display helper without changing other admin views.
+- **`src/lib/brokerErrors.ts`, `src/lib/errors.ts`:**
+  - Extended the existing broker classifier and structured reason-code normalization for `symbol not found`, `no broker session`, and broker verification failure, plus common known structured broker categories such as unknown ticket, trading disabled, HTTP 5xx, and rate limit.
+- **Verification:** `npm.cmd run typecheck` passed before this entry; full validation pending in this turn.
+
+### 2026-08-24 - Errors page useful legacy fallback copy + deferred linked-log enrichment
+
+- **Context (user request):** urgent `/errors` improvement before standup: make unknown legacy failures operator-useful without fabricating root causes, and stop linked execution-log enrichment from blocking initial page render.
+- **`src/lib/errors.ts`:**
+  - Added a central `errorDisplayForItem()` display helper that returns safe title, reason label, explanation, next action, evidence label, and cause grouping key.
+  - Changed legacy fallback root causes from `Detailed reason unavailable` / `Safe legacy fallback` to operation-specific titles with `Reason not recorded`, preserving known operations such as `No position opened`, `Management modification failed`, `Trade reconciliation failed`, `Order send failed`, `Trade close failed`, `Trade modification failed`, and `Basket protection sync failed`.
+  - Kept existing structured precedence: `trade_failure`, `reason_code`, explicit failure/skip reason, normalized broker classifier, then operation fallback.
+- **`src/pages/ErrorsPage.tsx`:**
+  - Removed the blocking loop that fetched linked execution logs for every `entry_not_opened` failed signal before first render.
+  - Base `/errors` now renders after the four normal source queries plus display-name/broker-label lookups; linked execution-log enrichment runs only for current visible page rows and for an opened row.
+  - Failure-cause grouping now uses the safe display key, so unknown rows group by operation (`No position opened - Reason not recorded`, `Management modification failed - Reason not recorded`, etc.) instead of one generic bucket.
+- **`src/components/ErrorDetailModal.tsx`:**
+  - Uses the same central safe display helper for "Why this error happened" and "What actually happened" instead of falling back to arbitrary `error.cause` text.
+  - Shows `Loading diagnostic evidence...` while supplemental linked-log diagnostics are loading.
+- **Verification:** `npm.cmd run typecheck` passed; `npm.cmd run lint` passed with 0 errors and 2 pre-existing Fast Refresh warnings; `npm.cmd run build` passed with existing Browserslist/chunk-size warnings; `git diff --check` passed with line-ending warnings only; conflict-marker scan passed.
+- **Follow-up:** browser/staging validation still required for live Supabase data. Base execution-log rows still select request/response payload columns because current structured failure evidence is stored there; the newly deferred payload reads are the supplemental linked logs for failed signals.
+
 ### 2026-08-21 - Admin Errors safe detail restore + safe AI explainer path
 
 - **Context (user request):** restore useful Admin Error Detail operator diagnostics regressed by the recent Errors privacy work, without touching trading logic, the TSCopier worker, bare BUY/SELL behavior, or re-enabling arbitrary raw payload rendering.
