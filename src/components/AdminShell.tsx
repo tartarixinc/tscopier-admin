@@ -81,6 +81,7 @@ const navigation: NavGroup[] = [
   {
     title: 'Monitoring',
     items: [
+      { label: 'Systems Health', to: '/monitoring/systems-health', icon: Activity },
       { label: 'Errors', to: '/errors', icon: ShieldAlert },
       { label: 'Errors Analytics', to: '/errors/analytics', icon: Activity },
       { label: 'Listener Events', to: '/monitoring/listener-events', icon: Activity },
