@@ -36,7 +36,6 @@ export const HEALTH_THRESHOLDS = {
 
 /** Row caps per query — a full page marks the source unreadable (counts unreliable). */
 const SIGNALS_CAP = 2000;
-const EXECUTED_CAP = 5000;
 const CLAIMS_CAP = 5000;
 const EXEC_LOGS_CAP = 3000;
 const DEAD_LETTERS_CAP = 1000;
@@ -56,6 +55,8 @@ export interface CheckResult {
 }
 
 export interface PipelineFunnel {
+  /** False when a funnel source was unreadable — counts are then meaningless. */
+  reliable: boolean;
   received: number;
   parsed: number;
   dispatched: number;
@@ -184,13 +185,27 @@ function tsPoint(pipelineTs: unknown, key: string): number | null {
 export async function fetchSystemHealth(windowHours: HealthWindow): Promise<SystemHealthReport> {
   const unreadableSources: string[] = [];
 
-  // --- Clock offset proxy: newest row touch vs local clock.
-  const clockRows = await runQuery<{ updated_at: string | null }>(
-    'clock probe',
+  // --- Clock offset proxy: worker heartbeats vs local clock. The signals
+  // table has no updated_at; leases/copier-health rows are written every
+  // few seconds by live workers, making them the freshest DB clock source.
+  let dbNowMs = NaN;
+  const leaseClock = await runQuery<{ updated_at: string | null }>(
+    'clock probe (leases)',
     unreadableSources,
-    () => authSupabase.from('signals').select('updated_at').order('updated_at', { ascending: false }).limit(1),
+    () => authSupabase.from('worker_session_leases').select('updated_at').order('updated_at', { ascending: false }).limit(1),
   );
-  const dbNowMs = clockRows?.[0]?.updated_at ? Date.parse(clockRows[0].updated_at) : NaN;
+  const leaseTs = leaseClock?.[0]?.updated_at ? Date.parse(leaseClock[0].updated_at) : NaN;
+  if (Number.isFinite(leaseTs)) {
+    dbNowMs = leaseTs;
+  } else {
+    const healthClock = await runQuery<{ updated_at: string | null }>(
+      'clock probe (listener health)',
+      unreadableSources,
+      () => authSupabase.from('copier_listener_health').select('updated_at').order('updated_at', { ascending: false }).limit(1),
+    );
+    const healthTs = healthClock?.[0]?.updated_at ? Date.parse(healthClock[0].updated_at) : NaN;
+    if (Number.isFinite(healthTs)) dbNowMs = healthTs;
+  }
   const clockOffsetMs = Number.isFinite(dbNowMs) ? Math.min(Math.max(Date.now() - dbNowMs, -120_000), 120_000) : 0;
   const serverNowMs = Date.now() - clockOffsetMs;
 
@@ -240,21 +255,22 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
   }
   const knownCopiers = (copierHealth ?? []).length;
 
-  // --- Signals funnel (window-scoped, review fixes #2/#3).
+  // --- Signals funnel (window-scoped). NOTE: signals has no updated_at —
+  // execution timing comes from pipeline_ts.executed_at (epoch ms jsonb).
+  // Known approximation: executions of signals received BEFORE the window
+  // are not counted (no queryable execution timestamp outside pipeline_ts).
   interface SignalRow {
     id: string;
     status: string | null;
     created_at: string | null;
-    updated_at: string | null;
     pipeline_ts: unknown;
   }
   const signals = await runQuery<SignalRow>(
     'signals',
     unreadableSources,
-    // Select only what the funnel needs; window filter on created_at keeps it bounded.
     () => authSupabase
       .from('signals')
-      .select('id, status, created_at, updated_at, pipeline_ts')
+      .select('id, status, created_at, pipeline_ts')
       .gte('created_at', sinceIso)
       .order('created_at', { ascending: false })
       .limit(SIGNALS_CAP),
@@ -270,42 +286,15 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
     const parsedAt = tsPoint(s.pipeline_ts, 'parsed_at');
     const inWindowParsed = parsedAt != null ? parsedAt >= windowStartMs : status !== 'pending';
     if (inWindowParsed) parsed += 1;
+    if (status === 'executed') {
+      const executedAt = tsPoint(s.pipeline_ts, 'executed_at');
+      if (executedAt == null || executedAt >= windowStartMs) executed += 1;
+    }
     if (status === 'pending') {
       const age = minutesSince(s.created_at, serverNowMs);
       if (age != null && (oldestPendingMinutes == null || age > oldestPendingMinutes)) oldestPendingMinutes = age;
     }
   }
-
-  // Executed stage: contract is "status executed whose executed_at (fallback
-  // updated_at) falls in the window" — signals received BEFORE the window but
-  // executed inside it must count too, so run a second bounded fetch keyed on
-  // updated_at and merge by id.
-  interface SignalRow2 { id: string; status: string | null; pipeline_ts: unknown; updated_at: string | null }
-  const executedRows = await runQuery<SignalRow2>(
-    'signals(executed)',
-    unreadableSources,
-    () => authSupabase
-      .from('signals')
-      .select('id, status, pipeline_ts, updated_at')
-      .eq('status', 'executed')
-      .gte('updated_at', sinceIso)
-      .order('updated_at', { ascending: false })
-      .limit(EXECUTED_CAP),
-    EXECUTED_CAP,
-  );
-  const seenExecuted = new Set<string>();
-  for (const s of executedRows ?? []) {
-    const at = tsPoint(s.pipeline_ts, 'executed_at') ?? (s.updated_at ? Date.parse(s.updated_at) : null);
-    if (at == null || at < windowStartMs) continue;
-    seenExecuted.add(s.id);
-  }
-  // Merge with rows already fetched from the created_at-windowed query.
-  for (const s of signals ?? []) {
-    if ((s.status ?? '').toLowerCase() !== 'executed' || seenExecuted.has(s.id)) continue;
-    const at = tsPoint(s.pipeline_ts, 'executed_at') ?? (s.updated_at ? Date.parse(s.updated_at) : null);
-    if (at != null && at >= windowStartMs) seenExecuted.add(s.id);
-  }
-  executed = seenExecuted.size;
 
   // Dispatched: distinct signal ids among claims created in-window.
   interface ClaimRow { signal_id: string }
@@ -392,8 +381,13 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
       e.count > esc.baselineMultiplier * flooredBaseline;
   }
 
-  // --- Funnel blockage detection.
+  // --- Funnel blockage detection. Only meaningful when BOTH funnel sources
+  // (signals + dispatch claims) were readable — otherwise skip entirely.
+  const signalsReadable = !unreadableSources.some(s => s.startsWith('signals') || s.startsWith('clock probe'));
+  const claimsReadable = !unreadableSources.some(s => s.startsWith('signal_broker_dispatch_claims'));
+  const funnelReliable = signalsReadable && claimsReadable;
   const funnel: PipelineFunnel = {
+    reliable: funnelReliable,
     received,
     parsed,
     dispatched: distinctDispatched,
@@ -402,21 +396,23 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
     blockedStage: -1,
     blockageDetail: null,
   };
-  const stages: Array<[string, number]> = [
-    ['Received', received],
-    ['Parsed', parsed],
-    ['Dispatched', distinctDispatched],
-    ['Executed', executed],
-  ];
-  for (let i = 1; i < stages.length; i += 1) {
-    const [prevLabel, prevCount] = stages[i - 1];
-    const [label, count] = stages[i];
-    if (prevCount < HEALTH_THRESHOLDS.pipelineMinParsedForRatio) continue;
-    if (count / prevCount < HEALTH_THRESHOLDS.pipelineDropOffWarnRatio) {
-      funnel.blockedStage = i;
-      funnel.blockageDetail =
-        `${prevCount - count} of ${prevCount} ${prevLabel.toLowerCase()} signals did not reach "${label}" in the last ${windowHours}h.`;
-      break;
+  if (funnelReliable) {
+    const stages: Array<[string, number]> = [
+      ['Received', received],
+      ['Parsed', parsed],
+      ['Dispatched', distinctDispatched],
+      ['Executed', executed],
+    ];
+    for (let i = 1; i < stages.length; i += 1) {
+      const [prevLabel, prevCount] = stages[i - 1];
+      const [label, count] = stages[i];
+      if (prevCount < HEALTH_THRESHOLDS.pipelineMinParsedForRatio) continue;
+      if (count / prevCount < HEALTH_THRESHOLDS.pipelineDropOffWarnRatio) {
+        funnel.blockedStage = i;
+        funnel.blockageDetail =
+          `${prevCount - count} of ${prevCount} ${prevLabel.toLowerCase()} signals did not reach "${label}" in the last ${windowHours}h.`;
+        break;
+      }
     }
   }
 
@@ -472,7 +468,9 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
             : { id: 'queue', label: 'Waiting queue', state: 'ok', summary: 'Nothing stuck' },
   );
 
-  const systemErrorCount = errorBuckets.filter(e => e.bucket === 'system' || e.bucket === 'unclassified').reduce((a, e) => a + e.count, 0);
+  // System bucket only — UNCLASSIFIED never drives alerts (plan: definitive
+  // data, not noise); it surfaces in the details table for weekly review.
+  const systemErrorCount = errorBuckets.filter(e => e.bucket === 'system').reduce((a, e) => a + e.count, 0);
   const externalEscalated = errorBuckets.some(e => e.bucket === 'external' && e.escalated);
   checks.push(
     unreadableSources.some(s => s.startsWith('trade_execution_logs'))
@@ -484,12 +482,13 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
           : { id: 'broker', label: 'Broker orders', state: 'ok', summary: 'Working' },
   );
 
+  const PIPELINE_STAGE_COUNT = 4;
   checks.push(
-    unreadableSources.some(s => s.startsWith('signals'))
-      ? { id: 'copying', label: 'Trade copying', state: 'unknown', summary: 'Cannot read pipeline' }
+    !funnel.reliable
+      ? { id: 'copying', label: 'Trade copying', state: 'unknown', summary: 'Cannot read pipeline', detail: 'One or more pipeline data sources were unreadable, so flow-through cannot be judged.' }
       : funnel.blockedStage >= 0
-        ? { id: 'copying', label: 'Trade copying', state: funnel.blockedStage === stages.length - 1 ? 'warn' : 'fail', summary: 'Flow interrupted', detail: funnel.blockageDetail ?? undefined }
-        : { id: 'copying', label: 'Trade copying', state: 'ok', summary: `${executed} copied` },
+        ? { id: 'copying', label: 'Trade copying', state: funnel.blockedStage === PIPELINE_STAGE_COUNT - 1 ? 'warn' : 'fail', summary: 'Flow interrupted', detail: funnel.blockageDetail ?? undefined }
+        : { id: 'copying', label: 'Trade copying', state: 'ok', summary: executed > 0 ? `${executed} copied` : 'No signals in window' },
   );
 
   return {

@@ -95,3 +95,19 @@ fixed and re-reviewed PASS (A-/A/A/A-). Fixes applied:
   unmount-safe setState; empty copier_listener_health renders unknown, not green.
 Remaining follow-ups: Railway-log edge-function tile (phase 2), cron/CI alerting,
 classifier parity test vs worker's classifyBrokerFailureReason.
+
+## Correction (2026-08-25, after first prod run)
+
+First production render was misleading — three defects, all fixed:
+1. `signals` has NO `updated_at` column (schema assumption wrong). Clock probe
+   now uses `worker_session_leases.updated_at` (fallback `copier_listener_health`);
+   executed-stage windowing uses only `pipeline_ts.executed_at`, with the
+   documented approximation that pre-window signals executing in-window are
+   not counted.
+2. Funnel could show a fake blockage when one source failed and another
+   succeeded (e.g. Dispatched=307 vs Received=0). Funnel is now marked
+   unreliable unless BOTH sources read cleanly; the strip renders an explicit
+   "cannot show" state instead of numbers.
+3. UNCLASSIFIED errors were silently counted as system failures on the Broker
+   orders tile. Per plan, unclassified never drives alerts — it appears in the
+   details table for weekly review only.

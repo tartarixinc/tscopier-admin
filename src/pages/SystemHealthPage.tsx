@@ -35,6 +35,18 @@ function Tile({ check }: { check: CheckResult }) {
 }
 
 function PipelineStrip({ funnel, windowHours }: { funnel: PipelineFunnel; windowHours: HealthWindow }) {
+  if (!funnel.reliable) {
+    return (
+      <div className="card p-5">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Signal pipeline — last {windowHours}h</h2>
+        </div>
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          Cannot show pipeline flow — one or more data sources were unreadable. See details below.
+        </p>
+      </div>
+    );
+  }
   const stages: Array<{ label: string; count: number; to: string }> = [
     { label: 'Received', count: funnel.received, to: '/signals' },
     { label: 'Parsed', count: funnel.parsed, to: '/signals' },
