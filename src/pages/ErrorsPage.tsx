@@ -7,6 +7,7 @@ import { Pagination } from '../components/DataTable';
 import { ErrorDetailModal } from '../components/ErrorDetailModal';
 import { Select } from '../components/ui/Select';
 import { Card } from '../components/ui/Card';
+import { Alert } from '../components/ui/Alert';
 import { Badge } from '../components/ui/Badge';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
@@ -26,6 +27,7 @@ import {
 import { applyBrokerCategory } from '../lib/brokerErrors';
 
 const PAGE_SIZE = 50;
+const PRIMARY_SOURCE_ROW_LIMIT = 250;
 const LINKED_LOG_PAGE_SIZE = 1000;
 const LINKED_LOG_SIGNAL_CHUNK_SIZE = 25;
 const ENRICHMENT_FAILURE_BACKOFF_MS = 20_000;
@@ -39,8 +41,8 @@ interface ExecutionRow {
   action: string | null;
   status: string;
   error_message: string | null;
-  request_payload: unknown;
-  response_payload: unknown;
+  request_payload?: unknown;
+  response_payload?: unknown;
   created_at: string;
 }
 
@@ -49,7 +51,7 @@ interface SignalRow {
   user_id: string | null;
   status: string;
   skip_reason: string | null;
-  raw_message: string | null;
+  raw_message?: string | null;
   parsed_data: unknown;
   created_at: string;
 }
@@ -74,7 +76,7 @@ interface DeadLetterRow {
   lane: string | null;
   attempts: number | null;
   reason: string | null;
-  payload: unknown;
+  payload?: unknown;
   status: string | null;
   created_at: string;
 }
@@ -150,6 +152,7 @@ export function ErrorsPage() {
   const [dateTo, setDateTo] = useState('');
   const [items, setItems] = useState<ErrorItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedErrorId, setSelectedErrorId] = useState<string | null>(null);
   const [enrichedSignalIds, setEnrichedSignalIds] = useState<Set<string>>(() => new Set());
   const [enrichingSignalIds, setEnrichingSignalIds] = useState<Set<string>>(() => new Set());
@@ -157,16 +160,19 @@ export function ErrorsPage() {
   const mountedRef = useRef(true);
   const itemsRef = useRef<ErrorItem[]>([]);
   const loadGenerationRef = useRef(0);
+  const loadInFlightGenerationRef = useRef<number | null>(null);
   const dataGenerationRef = useRef(0);
   const enrichmentCompletionsRef = useRef<Map<string, EnrichmentCompletion>>(new Map());
   const enrichmentFailuresRef = useRef<Map<string, EnrichmentFailure>>(new Map());
   const enrichingSignalIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
       mountedRef.current = false;
       loadGenerationRef.current += 1;
       dataGenerationRef.current += 1;
+      loadInFlightGenerationRef.current = null;
       enrichingSignalIdsRef.current.clear();
       enrichmentFailuresRef.current.clear();
     };
@@ -174,178 +180,216 @@ export function ErrorsPage() {
 
   useEffect(() => { setPage(1); }, [categoryFilter, severityFilter, causeFilter, search, dateFrom, dateTo]);
 
-  const loadErrors = useCallback(async () => {
+  const loadErrors = useCallback(async (options?: { force?: boolean; showLoading?: boolean }) => {
+    if (loadInFlightGenerationRef.current !== null && !options?.force) return;
+
     const loadGeneration = loadGenerationRef.current + 1;
     loadGenerationRef.current = loadGeneration;
+    loadInFlightGenerationRef.current = loadGeneration;
+    if (options?.showLoading) setLoading(true);
+    setLoadError(null);
     const from = dateFrom ? `${dateFrom}T00:00:00Z` : null;
     const to = dateTo ? `${dateTo}T23:59:59Z` : null;
 
-    const execQ = adminSupabase
-      .from('trade_execution_logs')
-      .select('id, user_id, signal_id, broker_account_id, action, status, error_message, request_payload, response_payload, created_at')
-      .in('status', ['failed', 'error'])
-      .order('created_at', { ascending: false });
-    if (from) execQ.gte('created_at', from);
-    if (to) execQ.lte('created_at', to);
+    try {
+      const execQ = adminSupabase
+        .from('trade_execution_logs')
+        .select('id, user_id, signal_id, broker_account_id, action, status, error_message, created_at')
+        .in('status', ['failed', 'error'])
+        .order('created_at', { ascending: false })
+        .limit(PRIMARY_SOURCE_ROW_LIMIT);
+      if (from) execQ.gte('created_at', from);
+      if (to) execQ.lte('created_at', to);
 
-    const sigQ = adminSupabase
-      .from('signals')
-      .select('id, user_id, status, skip_reason, raw_message, parsed_data, created_at')
-      .eq('status', 'failed')
-      .order('created_at', { ascending: false });
-    if (from) sigQ.gte('created_at', from);
-    if (to) sigQ.lte('created_at', to);
+      const sigQ = adminSupabase
+        .from('signals')
+        .select('id, user_id, status, skip_reason, parsed_data, created_at')
+        .eq('status', 'failed')
+        .order('created_at', { ascending: false })
+        .limit(PRIMARY_SOURCE_ROW_LIMIT);
+      if (from) sigQ.gte('created_at', from);
+      if (to) sigQ.lte('created_at', to);
 
-    const brokerQ = adminSupabase
-      .from('broker_accounts')
-      .select('id, user_id, label, platform, broker_name, account_login, connection_error, fxsocket_status, terminal_connected, last_synced_at')
-      .eq('connection_status', 'error')
-      .order('last_synced_at', { ascending: false, nullsFirst: false });
-    if (from) brokerQ.gte('last_synced_at', from);
-    if (to) brokerQ.lte('last_synced_at', to);
-
-    const deadQ = adminSupabase
-      .from('signal_queue_dead_letters')
-      .select('id, user_id, signal_id, lane, attempts, reason, payload, status, created_at')
-      .neq('status', 'replayed')
-      .order('created_at', { ascending: false });
-    if (from) deadQ.gte('created_at', from);
-    if (to) deadQ.lte('created_at', to);
-
-    const [{ data: execRows }, { data: sigRows }, { data: brokerRows }, { data: deadRows }] = await Promise.all([
-      execQ, sigQ, brokerQ, deadQ,
-    ]);
-
-    const userIds = new Set<string>();
-    (execRows ?? []).forEach(r => r.user_id && userIds.add(r.user_id));
-    (sigRows ?? []).forEach(r => r.user_id && userIds.add(r.user_id));
-    (brokerRows ?? []).forEach(r => r.user_id && userIds.add(r.user_id));
-    (deadRows ?? []).forEach(r => r.user_id && userIds.add(r.user_id));
-
-    const displayNames = await fetchDisplayNames([...userIds]);
-
-    const brokerIds = [...new Set(
-      (execRows ?? [])
-        .map(r => r.broker_account_id)
-        .filter(Boolean),
-    )];
-    const brokerLabels: Record<string, string> = {};
-    if (brokerIds.length > 0) {
-      const { data: brokerLabelRows } = await adminSupabase
+      const brokerQ = adminSupabase
         .from('broker_accounts')
-        .select('id, label')
-        .in('id', brokerIds);
-      (brokerLabelRows ?? []).forEach(b => { brokerLabels[b.id] = b.label ?? ''; });
-    }
+        .select('id, user_id, label, platform, broker_name, account_login, connection_error, fxsocket_status, terminal_connected, last_synced_at')
+        .eq('connection_status', 'error')
+        .order('last_synced_at', { ascending: false, nullsFirst: false })
+        .limit(PRIMARY_SOURCE_ROW_LIMIT);
+      if (from) brokerQ.gte('last_synced_at', from);
+      if (to) brokerQ.lte('last_synced_at', to);
 
-    const built: ErrorItem[] = [];
+      const deadQ = adminSupabase
+        .from('signal_queue_dead_letters')
+        .select('id, user_id, signal_id, lane, attempts, reason, status, created_at')
+        .neq('status', 'replayed')
+        .order('created_at', { ascending: false })
+        .limit(PRIMARY_SOURCE_ROW_LIMIT);
+      if (from) deadQ.gte('created_at', from);
+      if (to) deadQ.lte('created_at', to);
 
-    (execRows ?? []).forEach((r: ExecutionRow) => {
-      const item = executionLogToErrorItem({
-        ...r,
-        user_display_name: displayNames[r.user_id ?? ''] ?? null,
-        broker_label: brokerLabels[r.broker_account_id ?? ''] ?? null,
+      const [execRes, sigRes, brokerRes, deadRes] = await Promise.all([
+        execQ, sigQ, brokerQ, deadQ,
+      ]);
+
+      const sourceErrors: string[] = [];
+      if (execRes.error) sourceErrors.push(`trade_execution_logs: ${execRes.error.message}`);
+      if (sigRes.error) sourceErrors.push(`signals: ${sigRes.error.message}`);
+      if (brokerRes.error) sourceErrors.push(`broker_accounts: ${brokerRes.error.message}`);
+      if (deadRes.error) sourceErrors.push(`signal_queue_dead_letters: ${deadRes.error.message}`);
+      if (sourceErrors.length > 0) {
+        throw new Error(sourceErrors.join('; '));
+      }
+
+      const execRows = (execRes.data ?? []) as ExecutionRow[];
+      const sigRows = (sigRes.data ?? []) as SignalRow[];
+      const brokerRows = (brokerRes.data ?? []) as BrokerRow[];
+      const deadRows = (deadRes.data ?? []) as DeadLetterRow[];
+
+      const userIds = new Set<string>();
+      execRows.forEach(r => r.user_id && userIds.add(r.user_id));
+      sigRows.forEach(r => r.user_id && userIds.add(r.user_id));
+      brokerRows.forEach(r => r.user_id && userIds.add(r.user_id));
+      deadRows.forEach(r => r.user_id && userIds.add(r.user_id));
+
+      const displayNames = await fetchDisplayNames([...userIds]);
+
+      const brokerIds = [...new Set(
+        execRows
+          .map(r => r.broker_account_id)
+          .filter((id): id is string => Boolean(id)),
+      )];
+      const brokerLabels: Record<string, string> = {};
+      if (brokerIds.length > 0) {
+        const { data: brokerLabelRows, error } = await adminSupabase
+          .from('broker_accounts')
+          .select('id, label')
+          .in('id', brokerIds);
+        if (error) throw new Error(`broker_accounts labels: ${error.message}`);
+        (brokerLabelRows ?? []).forEach(b => { brokerLabels[b.id] = b.label ?? ''; });
+      }
+
+      const built: ErrorItem[] = [];
+
+      execRows.forEach((r: ExecutionRow) => {
+        const item = executionLogToErrorItem({
+          ...r,
+          request_payload: r.request_payload ?? null,
+          response_payload: r.response_payload ?? null,
+          user_display_name: displayNames[r.user_id ?? ''] ?? null,
+          broker_label: brokerLabels[r.broker_account_id ?? ''] ?? null,
+        });
+        built.push(item.structured_failure ? item : { ...item, ...applyBrokerCategory(item, item.cause) });
       });
-      built.push(item.structured_failure ? item : { ...item, ...applyBrokerCategory(item, item.cause) });
-    });
 
-    (sigRows ?? []).forEach((r: SignalRow) => {
-      const item = failedSignalToErrorItem({
-        ...r,
-        user_display_name: displayNames[r.user_id ?? ''] ?? null,
+      sigRows.forEach((r: SignalRow) => {
+        const item = failedSignalToErrorItem({
+          ...r,
+          user_display_name: displayNames[r.user_id ?? ''] ?? null,
+          raw_message: r.raw_message ?? null,
+        });
+        built.push(item.diagnostics ? item : { ...item, ...applyBrokerCategory(item, item.cause) });
       });
-      built.push(item.diagnostics ? item : { ...item, ...applyBrokerCategory(item, item.cause) });
-    });
 
-    (brokerRows ?? []).forEach((r: BrokerRow) => {
-      const { key, label } = categoryOf('broker', null);
-      const item: ErrorItem = {
-        id: r.id,
-        source: 'broker',
-        categoryKey: key,
-        categoryLabel: label,
-        user_id: r.user_id,
-        user_display_name: displayNames[r.user_id ?? ""] ?? null,
-        trade_context: r.label ?? null,
-        cause: r.connection_error,
-        detail: {
-          label: r.label,
-          platform: r.platform,
-          broker_name: r.broker_name,
-          account_login: r.account_login,
-          fxsocket_status: r.fxsocket_status,
-          terminal_connected: r.terminal_connected,
-          last_synced_at: r.last_synced_at,
-        },
-        signal_id: null,
-        broker_account_id: r.id,
-        broker_label: r.label,
-        created_at: r.last_synced_at,
-      };
-      built.push({ ...item, ...applyBrokerCategory(item, item.cause) });
-    });
+      brokerRows.forEach((r: BrokerRow) => {
+        const { key, label } = categoryOf('broker', null);
+        const item: ErrorItem = {
+          id: r.id,
+          source: 'broker',
+          categoryKey: key,
+          categoryLabel: label,
+          user_id: r.user_id,
+          user_display_name: displayNames[r.user_id ?? ""] ?? null,
+          trade_context: r.label ?? null,
+          cause: r.connection_error,
+          detail: {
+            label: r.label,
+            platform: r.platform,
+            broker_name: r.broker_name,
+            account_login: r.account_login,
+            fxsocket_status: r.fxsocket_status,
+            terminal_connected: r.terminal_connected,
+            last_synced_at: r.last_synced_at,
+          },
+          signal_id: null,
+          broker_account_id: r.id,
+          broker_label: r.label,
+          created_at: r.last_synced_at,
+        };
+        built.push({ ...item, ...applyBrokerCategory(item, item.cause) });
+      });
 
-    (deadRows ?? []).forEach((r: DeadLetterRow) => {
-      const { key, label } = categoryOf('dead_letter', null);
-      const item: ErrorItem = {
-        id: r.id,
-        source: 'dead_letter',
-        categoryKey: key,
-        categoryLabel: label,
-        user_id: r.user_id,
-        user_display_name: displayNames[r.user_id ?? ""] ?? null,
-        trade_context: extractTradeContext(r.payload, null) ?? (r.signal_id ? `signal ${r.signal_id.slice(0, 8)}` : null),
-        cause: r.reason,
-        detail: r.payload,
-        signal_id: r.signal_id,
-        broker_account_id: null,
-        broker_label: null,
-        attempts: r.attempts,
-        created_at: r.created_at,
-      };
-      built.push({ ...item, ...applyBrokerCategory(item, item.cause) });
-    });
+      deadRows.forEach((r: DeadLetterRow) => {
+        const { key, label } = categoryOf('dead_letter', null);
+        const item: ErrorItem = {
+          id: r.id,
+          source: 'dead_letter',
+          categoryKey: key,
+          categoryLabel: label,
+          user_id: r.user_id,
+          user_display_name: displayNames[r.user_id ?? ""] ?? null,
+          trade_context: extractTradeContext(r.payload ?? null, null) ?? (r.signal_id ? `signal ${r.signal_id.slice(0, 8)}` : null),
+          cause: r.reason,
+          detail: r.payload ?? null,
+          signal_id: r.signal_id,
+          broker_account_id: null,
+          broker_label: null,
+          attempts: r.attempts,
+          created_at: r.created_at,
+        };
+        built.push({ ...item, ...applyBrokerCategory(item, item.cause) });
+      });
 
-    if (!mountedRef.current || loadGenerationRef.current !== loadGeneration) return;
+      if (!mountedRef.current || loadGenerationRef.current !== loadGeneration) return;
 
-    dataGenerationRef.current += 1;
-    const now = Date.now();
-    const baseById = new Map(built.map(item => [item.id, item]));
-    const completions = new Map<string, EnrichmentCompletion>();
-    for (const [id, completion] of enrichmentCompletionsRef.current) {
-      const item = baseById.get(id);
-      if (!item || !itemNeedsLinkedExecutionEvidence(item)) continue;
-      const fingerprint = signalEvidenceFingerprint(item);
-      if (completionStillValid(completion, fingerprint, now)) completions.set(id, completion);
+      dataGenerationRef.current += 1;
+      const now = Date.now();
+      const baseById = new Map(built.map(item => [item.id, item]));
+      const completions = new Map<string, EnrichmentCompletion>();
+      for (const [id, completion] of enrichmentCompletionsRef.current) {
+        const item = baseById.get(id);
+        if (!item || !itemNeedsLinkedExecutionEvidence(item)) continue;
+        const fingerprint = signalEvidenceFingerprint(item);
+        if (completionStillValid(completion, fingerprint, now)) completions.set(id, completion);
+      }
+      enrichmentCompletionsRef.current = completions;
+      const failures = new Map<string, EnrichmentFailure>();
+      for (const [id, failure] of enrichmentFailuresRef.current) {
+        const item = baseById.get(id);
+        if (!item || !itemNeedsLinkedExecutionEvidence(item)) continue;
+        const fingerprint = signalEvidenceFingerprint(item);
+        if (failureStillBackedOff(failure, fingerprint, now)) failures.set(id, failure);
+      }
+      enrichmentFailuresRef.current = failures;
+      const previousById = new Map(itemsRef.current.map(item => [item.id, item]));
+      const next = built.map(item => {
+        const previous = previousById.get(item.id);
+        const fingerprint = signalEvidenceFingerprint(item);
+        const completion = enrichmentCompletionsRef.current.get(item.id);
+        const hasValidCompletedLinkedLogEnrichment = completionStillValid(completion, fingerprint, now);
+        if (!hasValidCompletedLinkedLogEnrichment || !previous?.diagnostics || !itemNeedsLinkedExecutionEvidence(item)) return item;
+        return {
+          ...item,
+          cause: previous.cause,
+          diagnostics: previous.diagnostics,
+        };
+      });
+      itemsRef.current = next;
+      setItems(next);
+      setEnrichedSignalIds(new Set(enrichmentCompletionsRef.current.keys()));
+      enrichingSignalIdsRef.current.clear();
+      setEnrichingSignalIds(new Set());
+      setLoading(false);
+    } catch (error) {
+      if (!mountedRef.current || loadGenerationRef.current !== loadGeneration) return;
+      console.error('Failed to load errors', error);
+      setLoadError(error instanceof Error ? error.message : String(error));
+      setLoading(false);
+    } finally {
+      if (loadInFlightGenerationRef.current === loadGeneration) {
+        loadInFlightGenerationRef.current = null;
+      }
     }
-    enrichmentCompletionsRef.current = completions;
-    const failures = new Map<string, EnrichmentFailure>();
-    for (const [id, failure] of enrichmentFailuresRef.current) {
-      const item = baseById.get(id);
-      if (!item || !itemNeedsLinkedExecutionEvidence(item)) continue;
-      const fingerprint = signalEvidenceFingerprint(item);
-      if (failureStillBackedOff(failure, fingerprint, now)) failures.set(id, failure);
-    }
-    enrichmentFailuresRef.current = failures;
-    const previousById = new Map(itemsRef.current.map(item => [item.id, item]));
-    const next = built.map(item => {
-      const previous = previousById.get(item.id);
-      const fingerprint = signalEvidenceFingerprint(item);
-      const completion = enrichmentCompletionsRef.current.get(item.id);
-      const hasValidCompletedLinkedLogEnrichment = completionStillValid(completion, fingerprint, now);
-      if (!hasValidCompletedLinkedLogEnrichment || !previous?.diagnostics || !itemNeedsLinkedExecutionEvidence(item)) return item;
-      return {
-        ...item,
-        cause: previous.cause,
-        diagnostics: previous.diagnostics,
-      };
-    });
-    itemsRef.current = next;
-    setItems(next);
-    setEnrichedSignalIds(new Set(enrichmentCompletionsRef.current.keys()));
-    enrichingSignalIdsRef.current.clear();
-    setEnrichingSignalIds(new Set());
-    setLoading(false);
   }, [dateFrom, dateTo]);
 
   const enrichSignalDiagnostics = useCallback(async (signalIds: string[]) => {
@@ -403,6 +447,8 @@ export function ErrorsPage() {
         const logs = linkedLogsBySignal.get(r.signal_id) ?? [];
         logs.push({
           ...r,
+          request_payload: r.request_payload ?? null,
+          response_payload: r.response_payload ?? null,
           broker_label: brokerLabels[r.broker_account_id ?? ''] ?? null,
         });
         linkedLogsBySignal.set(r.signal_id, logs);
@@ -464,9 +510,14 @@ export function ErrorsPage() {
   }, []);
 
   useEffect(() => {
-    loadErrors();
-    const timer = window.setInterval(() => { loadErrors(); }, 20_000);
-    return () => window.clearInterval(timer);
+    const initialLoadTimer = window.setTimeout(() => {
+      void loadErrors({ force: true, showLoading: true });
+    }, 0);
+    const timer = window.setInterval(() => { void loadErrors(); }, 20_000);
+    return () => {
+      window.clearTimeout(initialLoadTimer);
+      window.clearInterval(timer);
+    };
   }, [loadErrors]);
 
   const filtered = useMemo(() => {
@@ -524,26 +575,15 @@ export function ErrorsPage() {
     [filtered],
   );
 
-  const paged = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const paged = useMemo(
+    () => sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    [sorted, page],
+  );
 
   const selectedError = useMemo(
     () => selectedErrorId ? items.find(item => item.id === selectedErrorId) ?? null : null,
     [items, selectedErrorId],
   );
-
-  const visibleSignalIdsNeedingEvidence = useMemo(
-    () => paged
-      .filter(itemNeedsLinkedExecutionEvidence)
-      .map(item => item.id)
-      .filter(id => !enrichedSignalIds.has(id) && !enrichingSignalIds.has(id)),
-    [paged, enrichedSignalIds, enrichingSignalIds],
-  );
-
-  useEffect(() => {
-    if (!loading && visibleSignalIdsNeedingEvidence.length > 0) {
-      void enrichSignalDiagnostics(visibleSignalIdsNeedingEvidence);
-    }
-  }, [loading, visibleSignalIdsNeedingEvidence, enrichSignalDiagnostics]);
 
   useEffect(() => {
     if (!loading && selectedError && itemNeedsLinkedExecutionEvidence(selectedError) && !enrichedSignalIds.has(selectedError.id) && !enrichingSignalIds.has(selectedError.id)) {
@@ -577,7 +617,8 @@ export function ErrorsPage() {
       <div className="flex flex-col sm:flex-row items-start justify-between gap-3">
         <div className="page-header mb-0">
           <h1 className="page-title">Errors</h1>
-          <p className="page-subtitle">Failed executions, failed signals, broker connection errors and dead letters</p>
+          <p className="page-subtitle">Latest failed executions, failed signals, broker connection errors and dead letters</p>
+          <p className="text-xs text-slate-400 mt-1">Showing up to {PRIMARY_SOURCE_ROW_LIMIT.toLocaleString()} newest rows per source.</p>
         </div>
         <Button variant="secondary" size="sm" onClick={() => navigate('/errors/analytics')}>
           <BarChart3 className="w-3.5 h-3.5" />
@@ -690,6 +731,12 @@ export function ErrorsPage() {
           <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="input-base py-1.5 text-xs w-36" />
         </div>
       </div>
+
+      {loadError && (
+        <Alert variant="error" title="Failed to load errors">
+          {loadError}
+        </Alert>
+      )}
 
       {loading ? (
         <Card>

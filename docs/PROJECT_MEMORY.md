@@ -2,6 +2,33 @@
 
 ## Changelog
 
+### 2026-08-26 - Signal/Error modal trade config + faster Errors page initial load
+
+- **Context (user request):** keep the visually approved Signal/Error detail modal, do not reintroduce Execution Attempts, and make `/errors` load faster without backend/schema/worker/trading changes, commits, pushes, or deploys.
+- **Signal/Error modal:**
+  - Removed the visible `ExecutionAttemptsSection` from `SignalPipelineBody`; the underlying execution-log data remains loaded and available for derived diagnostics and other components.
+  - Added a compact `Trade configuration` section that summarizes supported broker/account/channel settings and prefers execution-time lot/risk values from the linked trade or execution payloads when recorded.
+  - Labels current stored config honestly as `Account setting` or `Channel override`; it only uses `Lot size used` / `Risk used` when execution data exists.
+  - Keeps raw `manual_settings`, `ai_settings`, `channel_trading_configs`, execution attempt cards, and request/response payload dumps out of the modal UI.
+- **Errors page speed:**
+  - Reduced the `/errors` initial per-source cap from 1000 to 250 rows.
+  - Removed heavy `request_payload`, `response_payload`, `raw_message`, and dead-letter `payload` fields from initial list queries; selected modal drill-in still loads full signal pipeline evidence.
+  - Stopped automatic visible-row linked-log enrichment after list load; selected modal enrichment remains available on demand.
+  - Added a 5-minute in-memory cache and chunking to `fetchDisplayNames()` so normal polling does not repeatedly refetch the same `user_profiles` rows.
+- **Affected files:** `src/pages/ErrorsPage.tsx`, `src/lib/adminSupabase.ts`, `src/hooks/useSignalPipeline.ts`, `src/components/ErrorDetailModal.tsx`, `src/components/pipeline/SignalPipelineBody.tsx`, `src/components/pipeline/PipelineSections.tsx`, `src/lib/userConfigurationSummary.ts`, `scripts/verify-user-configuration-summary.cjs`, `scripts/verify-errors-page-fast-load.cjs`.
+- **Verification:** focused verification scripts passed; `npm.cmd run typecheck` passed; changed-file ESLint passed with the existing Fast Refresh warning in `PipelineSections.tsx`; `npm.cmd run build` passed with existing Browserslist/chunk-size warnings; `git diff --check` passed with line-ending warnings only; conflict-marker scan passed; local Vite served `/errors` over HTTP 200 on `127.0.0.1:5174`.
+
+### 2026-08-25 - Removed accidental User Detail Support diagnostics scope
+
+- **Context (user request):** urgent PR correction to remove only the unapproved User Support Diagnostics UI while preserving the approved `/errors` improvements. No commits, pushes, deploys, worker/trading logic changes, or error classification/performance rollbacks.
+- **Removed support scope:**
+  - Deleted `src/components/user/UserSupportDiagnosticsTab.tsx`, including the large account/channel/preset configuration JSON viewers, raw Telegram signal message display, per-signal support diagnosis, linked trade/outcome panel, and support-only enrichment queries.
+  - Restored `src/components/user/UserActivityTabs.tsx` to the previous tab set: Signals, Trades, Copier Logs. Default tab is Signals again.
+  - Removed the `supportSummary` prop wiring from `src/pages/UserDetailPage.tsx`.
+- **Intentionally retained independent User Detail fixes:** stale user navigation guards, loaded-user render guard, async email action guards, and reported-trades lazy pagination/exact count remain because they are independent of the Support diagnostics UI.
+- **Preserved `/errors` work:** no edits were made to `src/pages/ErrorsPage.tsx`, `src/components/ErrorDetailModal.tsx`, `src/lib/errors.ts`, or `src/lib/brokerErrors.ts`.
+- **Verification:** `npm.cmd run typecheck` passed after unsandboxed rerun because the sandbox denied Node `lstat` on `C:\Users\user`; `npm run lint` passed with 0 errors and 2 existing Fast Refresh warnings; `npm.cmd run build` passed with existing Browserslist/chunk-size warnings; `git diff --check` passed with line-ending warnings only; conflict-marker scan passed; local Vite served HTTP 200 on `127.0.0.1:5173`. No local browser MCP was available for an authenticated UI walkthrough, so User Detail UI removal was validated by source/reference scans plus served-app startup.
+
 ### 2026-08-24 - User support release-gate blockers fixed
 
 - **Context (user request):** fix only the two final Support diagnostics audit blockers. No redesign, worker/trading behavior changes, schema/RLS/auth changes, commit, push, deploy, migration, or package install.

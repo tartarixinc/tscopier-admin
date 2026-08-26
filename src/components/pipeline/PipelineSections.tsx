@@ -1,7 +1,9 @@
 import { useState } from 'react';
-import { Activity, Clock, ShieldAlert, ShieldCheck, Sparkles, AlertTriangle, Info } from 'lucide-react';
+import { Activity, Clock, ShieldAlert, ShieldCheck, Sparkles, AlertTriangle, Info, Settings } from 'lucide-react';
 import { authSupabase as adminSupabase } from '../../lib/adminSupabase';
 import { formatDate } from '../../lib/formatters';
+import { buildUserConfigurationSummary } from '../../lib/userConfigurationSummary';
+import type { UserConfigurationBroker, UserConfigurationSignal, UserConfigurationTrade } from '../../lib/userConfigurationSummary';
 import type { PipelineTimelineEvent, PipelineStageStat } from '../../lib/pipelineTimeline';
 import type { PipelineIssue } from '../../lib/pipelineIssues';
 import { JsonViewer } from '../JsonViewer';
@@ -18,6 +20,7 @@ export interface ExecutionLogRow {
   error_message: string | null;
   request_payload: unknown;
   response_payload: unknown;
+  broker_account_id?: string | null;
   created_at: string | null;
 }
 
@@ -393,6 +396,74 @@ export function IssuesFoundSection({ issues }: { issues: PipelineIssue[] }) {
           </div>
         ))}
       </div>
+    </section>
+  );
+}
+
+function configToneClass(tone: 'success' | 'warning' | 'error' | 'muted' | undefined): string {
+  if (tone === 'success') return 'text-success-700 dark:text-success-300';
+  if (tone === 'warning') return 'text-amber-700 dark:text-amber-300';
+  if (tone === 'error') return 'text-error-700 dark:text-error-300';
+  return 'text-slate-800 dark:text-slate-100';
+}
+
+export function UserConfigurationSection({
+  brokerConfigs,
+  signal,
+  trade,
+  executionLogs,
+  tradeBrokerAccountId,
+}: {
+  brokerConfigs: UserConfigurationBroker[];
+  signal: UserConfigurationSignal | null;
+  trade?: UserConfigurationTrade | null;
+  executionLogs: ExecutionLogRow[];
+  tradeBrokerAccountId?: string | null;
+}) {
+  const broker = tradeBrokerAccountId
+    ? brokerConfigs.find(row => row.id === tradeBrokerAccountId) ?? brokerConfigs[0] ?? null
+    : brokerConfigs[0] ?? null;
+  const summary = buildUserConfigurationSummary(broker, signal, { trade, executionLogs });
+
+  return (
+    <section className="rounded-xl border border-slate-200 dark:border-slate-700 p-4 space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="flex items-center gap-1.5 text-sm font-semibold text-slate-700 dark:text-slate-200">
+            <Settings className="w-4 h-4 text-primary-500" />
+            Trade configuration
+          </h3>
+          <p className="text-xs text-slate-400 mt-0.5">
+            Effective settings used for this signal where recorded.
+          </p>
+        </div>
+        {(summary.brokerLabel || summary.brokerPlatform) && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {summary.brokerLabel && <Badge variant="muted">{summary.brokerLabel}</Badge>}
+            {summary.brokerPlatform && <Badge variant="muted">{summary.brokerPlatform}</Badge>}
+          </div>
+        )}
+      </div>
+
+      {summary.items.length === 0 ? (
+        <p className="text-xs text-slate-400">Not available for this signal.</p>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          {summary.items.map(item => (
+            <div key={`${item.source}:${item.label}`} className="rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700/60 px-3 py-2">
+              <div className="flex items-start justify-between gap-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">{item.label}</p>
+                <span className="shrink-0 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-1.5 py-0.5 text-[9px] font-medium text-slate-400">
+                  {item.source}
+                </span>
+              </div>
+              <p className={clsx('text-sm mt-1 truncate font-medium', configToneClass(item.tone))}>
+                {item.value}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }

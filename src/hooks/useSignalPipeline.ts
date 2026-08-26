@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { authSupabase as adminSupabase } from '../lib/adminSupabase';
 import type { ExecutionLogRow } from '../components/pipeline/PipelineSections';
+import type { UserConfigurationBroker } from '../lib/userConfigurationSummary';
 import { collectPipelineIssues, type PipelineIssue } from '../lib/pipelineIssues';
 import {
   parsePipelineTimestamps,
@@ -78,6 +79,7 @@ export interface SignalPipelineData {
   executionLogs: ExecutionLogRow[];
   listenerEvents: ListenerEventRow[];
   trade: LinkedTrade | null;
+  brokerConfigs: UserConfigurationBroker[];
   loading: boolean;
   error: string | null;
   pipeline: Record<string, number> | undefined;
@@ -93,12 +95,13 @@ export interface SignalPipelineData {
 
 /** Loads the full pipeline record for a signal: signal row, canonical channel
  *  signal, execution attempts, listener events, and the first linked trade. */
-export function useSignalPipeline(signalId: string | null): SignalPipelineData {
+export function useSignalPipeline(signalId: string | null, preferredBrokerAccountId?: string | null): SignalPipelineData {
   const [signal, setSignal] = useState<SignalRow | null>(null);
   const [channelSignal, setChannelSignal] = useState<ChannelSignalRow | null>(null);
   const [executionLogs, setExecutionLogs] = useState<ExecutionLogRow[]>([]);
   const [listenerEvents, setListenerEvents] = useState<ListenerEventRow[]>([]);
   const [trade, setTrade] = useState<LinkedTrade | null>(null);
+  const [brokerConfigs, setBrokerConfigs] = useState<UserConfigurationBroker[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -113,6 +116,7 @@ export function useSignalPipeline(signalId: string | null): SignalPipelineData {
       setExecutionLogs([]);
       setListenerEvents([]);
       setTrade(null);
+      setBrokerConfigs([]);
       setLoading(false);
       setError('No linked signal — no pipeline data available.');
       return;
@@ -127,7 +131,7 @@ export function useSignalPipeline(signalId: string | null): SignalPipelineData {
           .maybeSingle(),
         adminSupabase
           .from('trade_execution_logs')
-          .select('id, action, status, error_message, request_payload, response_payload, created_at')
+          .select('id, action, status, error_message, request_payload, response_payload, broker_account_id, created_at')
           .eq('signal_id', signalId)
           .order('created_at', { ascending: false })
           .limit(50),
@@ -146,7 +150,26 @@ export function useSignalPipeline(signalId: string | null): SignalPipelineData {
         return;
       }
       setSignal(sig);
-      setExecutionLogs((logData ?? []) as ExecutionLogRow[]);
+      const logs = (logData ?? []) as ExecutionLogRow[];
+      setExecutionLogs(logs);
+
+      const tradeRow = tradeData as LinkedTradeFetchRow | null;
+      const brokerConfigIds = [
+        preferredBrokerAccountId,
+        tradeRow?.broker_account_id ?? null,
+        ...logs.map(log => log.broker_account_id ?? null),
+      ].filter((id): id is string => Boolean(id));
+      const uniqueBrokerConfigIds = [...new Set(brokerConfigIds)].slice(0, 5);
+      let configRows: UserConfigurationBroker[] = [];
+      if (uniqueBrokerConfigIds.length > 0) {
+        const { data: brokerConfigData } = await adminSupabase
+          .from('broker_accounts')
+          .select('id, label, platform, broker_name, copier_mode, trade_allowed, manual_settings, ai_settings, channel_trading_configs')
+          .in('id', uniqueBrokerConfigIds)
+          .limit(5);
+        configRows = (brokerConfigData ?? []) as UserConfigurationBroker[];
+      }
+      if (!cancelled) setBrokerConfigs(configRows);
 
       if (sig.telegram_message_id) {
         const { data: eventData } = await adminSupabase
@@ -159,17 +182,10 @@ export function useSignalPipeline(signalId: string | null): SignalPipelineData {
       }
 
       let brokerLabel: string | null = null;
-      if (tradeData) {
-        const t = tradeData as LinkedTradeFetchRow;
+      if (tradeRow) {
+        const t = tradeRow;
         const brokerId = t.broker_account_id;
-        if (brokerId) {
-          const { data: brokerRow } = await adminSupabase
-            .from('broker_accounts')
-            .select('label')
-            .eq('id', brokerId)
-            .maybeSingle();
-          brokerLabel = (brokerRow as { label?: string } | null)?.label ?? null;
-        }
+        brokerLabel = brokerId ? configRows.find(row => row.id === brokerId)?.label ?? null : null;
         if (!cancelled) {
           setTrade({
             id: t.id,
@@ -216,7 +232,7 @@ export function useSignalPipeline(signalId: string | null): SignalPipelineData {
     })();
 
     return () => { cancelled = true; };
-  }, [signalId]);
+  }, [signalId, preferredBrokerAccountId]);
 
   const pipeline = signal ? parsePipelineTimestamps(signal.pipeline_ts ?? channelSignal?.pipeline_ts) : undefined;
   const events = pipeline ? buildPipelineTimeline(pipeline) : [];
@@ -243,6 +259,7 @@ export function useSignalPipeline(signalId: string | null): SignalPipelineData {
     executionLogs,
     listenerEvents,
     trade,
+    brokerConfigs,
     loading,
     error,
     pipeline,
