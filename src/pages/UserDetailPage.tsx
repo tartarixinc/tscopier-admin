@@ -624,11 +624,7 @@ export function UserDetailPage() {
       </Card>
 
       {/* User activity tabs */}
-      <UserActivityTabs
-        userId={profile.user_id}
-        counts={counts}
-        supportSummary={{ profile, subscription, telegram, brokers, channels, counts }}
-      />
+      <UserActivityTabs userId={profile.user_id} counts={counts} />
     </div>
   );
 }

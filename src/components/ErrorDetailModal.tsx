@@ -391,7 +391,7 @@ function SafeAiExplainSection({ context }: { context: SafeAiContext }) {
 }
 
 export function ErrorDetailModal({ error, diagnosticsLoading = false, safeDisplayOnly = false, onClose }: ErrorDetailModalProps) {
-  const pipeline = useSignalPipeline(error.signal_id);
+  const pipeline = useSignalPipeline(error.signal_id, error.broker_account_id);
   const classification = classifyErrorItemSeverity(error);
   const display = useMemo(() => errorDisplayForItem(error), [error]);
   const safeSummary = useMemo(() => buildSafeSignalTradeSummary(error, pipeline), [error, pipeline]);
@@ -504,11 +504,11 @@ export function ErrorDetailModal({ error, diagnosticsLoading = false, safeDispla
               <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1">
                 <User className="w-3 h-3" /> User involved
               </p>
-              <p className="text-sm mt-0.5 truncate">
+              <div className="text-sm mt-0.5 truncate">
                 {error.user_id
                   ? <UserLink userId={error.user_id} displayName={error.user_display_name} />
                   : <span className="text-slate-400">—</span>}
-              </p>
+              </div>
             </div>
             <div className="rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700/60 px-3 py-2">
               <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1">

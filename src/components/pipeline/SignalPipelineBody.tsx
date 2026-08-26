@@ -7,7 +7,7 @@ import {
   AiExplainSection,
   AiVerificationSection,
   ModelDecisionChainSection,
-  ExecutionAttemptsSection,
+  UserConfigurationSection,
   IssuesFoundSection,
   SummaryCell,
 } from './PipelineSections';
@@ -53,7 +53,7 @@ function ManagementFailBanner({ error, count }: { error: string; count: number }
 }
 
 /** Renders the full pipeline record for a signal: decision chain, verification,
- *  failure/skip banners, linked trade, timeline, latency, and execution attempts. */
+ *  failure/skip banners, linked trade, timeline, user configuration, latency, and deep evidence. */
 export function SignalPipelineBody(data: SignalPipelineData & {
   report?: { category?: string | null; reason?: string | null; symbol?: string | null; direction?: string | null } | null;
   context?: string | null;
@@ -65,6 +65,7 @@ export function SignalPipelineBody(data: SignalPipelineData & {
     executionLogs,
     listenerEvents,
     trade,
+    brokerConfigs,
     loading,
     error,
     events,
@@ -156,6 +157,19 @@ export function SignalPipelineBody(data: SignalPipelineData & {
 
           {!hideRawData && <AiExplainSection signalId={signal?.id ?? null} tradeId={trade?.id ?? null} report={report} context={context} />}
 
+          <UserConfigurationSection
+            brokerConfigs={brokerConfigs}
+            signal={signal ? {
+              channel_id: signal.channel_id,
+              channel_signal_id: signal.channel_signal_id ?? signal.telegram_channels?.[0]?.signal_channel_id ?? null,
+              parsed_data: signal.parsed_data,
+              skip_reason: signal.skip_reason ?? channelSkipReason,
+            } : null}
+            trade={trade}
+            executionLogs={executionLogs}
+            tradeBrokerAccountId={trade?.broker_account_id ?? null}
+          />
+
           <LatencyBreakdownSection stats={stats} />
 
           {!hideRawData && (
@@ -183,8 +197,6 @@ export function SignalPipelineBody(data: SignalPipelineData & {
               </div>
             </section>
           )}
-
-          <ExecutionAttemptsSection logs={executionLogs} showRawPayloads={!hideRawData} showRawErrors={!hideRawData} />
         </>
       )}
     </div>
