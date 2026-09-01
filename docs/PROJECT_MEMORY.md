@@ -49,12 +49,181 @@
   - `trade_execution_logs` failure query now selects `id, action, broker_account_id, signal_id, created_at, response_payload` (in addition to existing columns), so each occurrence carries its raw request/response payloads for drill-down.
   - New `failureBaselinePerWindow` field on `SystemHealthReport` — the 7-day average total failures per window — so the modal can compute the multiple in plain language.
 - **UI (`src/pages/SystemHealthPage.tsx`):**
-  - Failure table rows clickable; bucket label/style maps lifted to module scope (`BUCKET_LABEL`, `BUCKET_STYLE`).
+  - Failure table rows clickable; bucket label/style lifted to module scope (`BUCKET_LABEL`, `BUCKET_STYLE`).
   - `ModalShell` gained optional `wide` prop (`max-w-4xl`, used by this modal only).
   - New `ErrorBucketModal` — full drill-down with: stat cards (occurrences, users, first/last seen); per-user breakdown grid with `UserLink`; expandable per-occurrence list showing full error message, user/signal/broker/log IDs, and raw request/response JSON via `JsonViewer`.
   - Escalation verdict rewritten as plain English via `escalationStory()`: states what happened, compares against the week's normal failure rate (with the real baseline number visible), and gives a verdict — no formulas, no ≥/×/AND symbols. Header reads "Should someone look at this? Yes — alarm raised" or "Should someone look at this? No alarm".
 - **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors), `npm run build` ✓.
 - **Follow-up:** none.
+
+### 2026-08-26 - Signal/Error modal trade config + faster Errors page initial load
+
+- **Context (user request):** keep the visually approved Signal/Error detail modal, do not reintroduce Execution Attempts, and make `/errors` load faster without backend/schema/worker/trading changes, commits, pushes, or deploys.
+- **Signal/Error modal:**
+  - Removed the visible `ExecutionAttemptsSection` from `SignalPipelineBody`; the underlying execution-log data remains loaded and available for derived diagnostics and other components.
+  - Added a compact `Trade configuration` section that summarizes supported broker/account/channel settings and prefers execution-time lot/risk values from the linked trade or execution payloads when recorded.
+  - Labels current stored config honestly as `Account setting` or `Channel override`; it only uses `Lot size used` / `Risk used` when execution data exists.
+  - Keeps raw `manual_settings`, `ai_settings`, `channel_trading_configs`, execution attempt cards, and request/response payload dumps out of the modal UI.
+- **Errors page speed:**
+  - Reduced the `/errors` initial per-source cap from 1000 to 250 rows.
+  - Removed heavy `request_payload`, `response_payload`, `raw_message`, and dead-letter `payload` fields from initial list queries; selected modal drill-in still loads full signal pipeline evidence.
+  - Stopped automatic visible-row linked-log enrichment after list load; selected modal enrichment remains available on demand.
+  - Added a 5-minute in-memory cache and chunking to `fetchDisplayNames()` so normal polling does not repeatedly refetch the same `user_profiles` rows.
+- **Affected files:** `src/pages/ErrorsPage.tsx`, `src/lib/adminSupabase.ts`, `src/hooks/useSignalPipeline.ts`, `src/components/ErrorDetailModal.tsx`, `src/components/pipeline/SignalPipelineBody.tsx`, `src/components/pipeline/PipelineSections.tsx`, `src/lib/userConfigurationSummary.ts`, `scripts/verify-user-configuration-summary.cjs`, `scripts/verify-errors-page-fast-load.cjs`.
+- **Verification:** focused verification scripts passed; `npm.cmd run typecheck` passed; changed-file ESLint passed with the existing Fast Refresh warning in `PipelineSections.tsx`; `npm.cmd run build` passed with existing Browserslist/chunk-size warnings; `git diff --check` passed with line-ending warnings only; conflict-marker scan passed; local Vite served `/errors` over HTTP 200 on `127.0.0.1:5174`.
+
+### 2026-08-25 - Removed accidental User Detail Support diagnostics scope
+
+- **Context (user request):** urgent PR correction to remove only the unapproved User Support Diagnostics UI while preserving the approved `/errors` improvements. No commits, pushes, deploys, worker/trading logic changes, or error classification/performance rollbacks.
+- **Removed support scope:**
+  - Deleted `src/components/user/UserSupportDiagnosticsTab.tsx`, including the large account/channel/preset configuration JSON viewers, raw Telegram signal message display, per-signal support diagnosis, linked trade/outcome panel, and support-only enrichment queries.
+  - Restored `src/components/user/UserActivityTabs.tsx` to the previous tab set: Signals, Trades, Copier Logs. Default tab is Signals again.
+  - Removed the `supportSummary` prop wiring from `src/pages/UserDetailPage.tsx`.
+- **Intentionally retained independent User Detail fixes:** stale user navigation guards, loaded-user render guard, async email action guards, and reported-trades lazy pagination/exact count remain because they are independent of the Support diagnostics UI.
+- **Preserved `/errors` work:** no edits were made to `src/pages/ErrorsPage.tsx`, `src/components/ErrorDetailModal.tsx`, `src/lib/errors.ts`, or `src/lib/brokerErrors.ts`.
+- **Verification:** `npm.cmd run typecheck` passed after unsandboxed rerun because the sandbox denied Node `lstat` on `C:\Users\user`; `npm run lint` passed with 0 errors and 2 existing Fast Refresh warnings; `npm.cmd run build` passed with existing Browserslist/chunk-size warnings; `git diff --check` passed with line-ending warnings only; conflict-marker scan passed; local Vite served HTTP 200 on `127.0.0.1:5173`. No local browser MCP was available for an authenticated UI walkthrough, so User Detail UI removal was validated by source/reference scans plus served-app startup.
+
+### 2026-08-24 - User support release-gate blockers fixed
+
+- **Context (user request):** fix only the two final Support diagnostics audit blockers. No redesign, worker/trading behavior changes, schema/RLS/auth changes, commit, push, deploy, migration, or package install.
+- **`src/components/user/UserSupportDiagnosticsTab.tsx`:**
+  - Replaced the remaining batched `trades` global `.limit()` with chunked `signal_id` pagination using `.range()` until every linked trade for the current visible signal page is exhausted.
+  - Preserved cancellation checks before and after each paginated trade fetch page so stale Support page/user requests cannot populate current rows.
+  - Finalized raw Telegram/config string sanitization so explicitly labeled sensitive values (`password`, `passwd`, `token`, `session`, `session_string`/`session-string`/`sessionstring`, standalone `Bearer`, `authorization Bearer`, `api_key`/`api-key`/`apikey`, `secret`, `cookie`, `otp`, `credential`) are redacted regardless of value length while ordinary signal content remains visible.
+- **`src/pages/UserDetailPage.tsx`:**
+  - Added a request-generation plus cleanup guard around the main user-detail load so rapid User A -> User B -> User C navigation cannot let older responses overwrite the current profile, summary, counts, trade-report count, or loading state.
+  - Added a loaded-user render guard and immediate user-bound state reset on `userId` changes, so the page shows a loading skeleton instead of rendering the previous user's profile/support summary under the new URL.
+  - Scoped async subscription/invoice email action results to the initiating user and current detail-load generation, so late User A email responses cannot render under User B after navigation.
+- **Validation:** `npm.cmd run typecheck` passed; `npm.cmd run lint` passed with 0 errors and 2 existing Fast Refresh warnings; `npm.cmd run build` passed with existing Browserslist/chunk-size warnings; `git diff --check` passed with line-ending warnings only; conflict-marker scan passed.
+- **Known follow-up:** this Support view still shows stored current account/channel/preset settings only. An authoritative execution-time config snapshot/resolver is still needed before Admin can label historical config as the exact effective config used for a past trade.
+
+### 2026-08-24 - User support diagnostics review blockers fixed
+
+- **Context (user request):** fix only the current Support tab review findings. No redesign, worker/trading/parser/broker behavior changes, schema/RLS/auth changes, commit, push, deploy, migration, or package install.
+- **`src/components/user/UserSupportDiagnosticsTab.tsx`:**
+  - Hardened raw Telegram signal text sanitization so clearly secret-looking values after `password`, `token`, `session`, `session_string`, `authorization Bearer`, `api_key`/`apikey`, `secret`, `cookie`, `otp`, and `credential` labels are redacted while ordinary signal text remains visible.
+  - Extended stored-config sanitization to inspect recursive string values as well as sensitive object keys, so nested values such as `Authorization: Bearer ...` and `password=...` are redacted before reaching `JsonViewer`.
+  - Fixed `entry_not_opened` mixed-account support outcomes by building the account set from both linked execution logs and linked trade rows, then resolving each broker account independently.
+  - Treats only linked trade rows with `open` or `closed` status as proof of successful execution; non-terminal trade rows do not fabricate success.
+  - Replaced the visible-page execution-log global `.limit()` with chunked `signal_id` batch pagination using `.range()` until each current visible chunk is exhausted, preserving evidence for older visible signals without loading all user history.
+
+### 2026-08-24 - Admin user support diagnostics tab + paginated report history
+
+- **Context (user request):** implement an Admin User Detail support/configuration view without changing worker/trading/parser/broker behavior, schema, RLS, deploy state, or production config.
+- **`src/components/user/UserSupportDiagnosticsTab.tsx`:**
+  - Added a lazy-loaded Support tab for user detail that combines user summary, Telegram/broker/channel state, recent signals, exact raw Telegram signal text, parsed symbol/direction/entry/SL/TP, execution outcome, linked trades, broker/account, and stored configuration.
+  - Batches current-page signal correlation by `signal_id` for `trade_execution_logs` and `trades`, and fetches broker/channel/preset config once for the tab.
+  - Shows separate per-broker-account outcomes and uses the existing `/errors` helper path (`failedSignalToErrorItem`, `executionLogToErrorItem`, `errorDisplayForItem`) so structured/root-cause normalization wins over fallback copy.
+  - Labels configuration as `Account setting`, `Channel override`, or `Stored setting`; it deliberately does not call historical config effective unless existing execution records prove the applied value.
+  - Shows raw Telegram signal text where available while hiding secret-looking auth/token/password/session/cookie/API-key/OTP lines and secret config fields; it does not call AI.
+- **`src/components/user/UserActivityTabs.tsx`:**
+  - Added the Support tab as the default user-detail activity tab while preserving existing Signals, Trades, and Copier Logs tabs.
+- **`src/pages/UserDetailPage.tsx`:**
+  - Passed the already-loaded user summary into the Support tab.
+  - Changed `trade_reports` from an all-rows initial fetch to a lazy paginated panel with an exact count, preserving full logical history without silently truncating old reports/errors.
+- **Verification:** `npm.cmd run typecheck`, `npm.cmd run lint`, and `npm.cmd run build` passed in this turn; lint still reports the two existing Fast Refresh warnings.
+
+### 2026-08-24 - Errors page audit blockers fixed: stale guards + scoped modal copy + broker patterns
+
+- **Context (user request):** address the final read-only audit findings for the `/errors` performance/operator-fallback patch. No commits, pushes, deploys, migrations, package installs, or staging/prod connections.
+- **`src/pages/ErrorsPage.tsx`:**
+  - Added mount/load/data generation refs so stale base loads and stale linked-log enrichment responses cannot update current rows after a newer load starts, filters/date range change, or the component unmounts.
+  - Added synchronous ref-based enrichment dedupe so visible-row enrichment and modal-open enrichment do not race each other into duplicate linked-log queries for the same signal.
+  - Preserves already-enriched diagnostics across the normal 20s base poll when the same signal row remains present, avoiding recurring enrichment churn for unchanged visible rows.
+  - Fixed the review blocker where fallback `entry_not_opened` diagnostics from `failedSignalToErrorItem(..., [])` were incorrectly treated as completed linked-log enrichment. Completed enrichment is now tracked only by `enrichedSignalIdsRef` after the linked-log fetch path finishes.
+  - Fixed the follow-up review blockers by replacing signal-id-only completion with explicit enrichment state: in-flight ids, completed-with-evidence, completed-no-evidence with a 40s TTL, and failed-with-backoff using the existing 20s poll cadence. Completion is now keyed by a bounded signal evidence fingerprint instead of signal id alone.
+- **`src/components/ErrorDetailModal.tsx`:**
+  - Restored the previous `explainFailure()` fallback for shared uses from Copier Logs, Signals, and Trade Execution Logs.
+  - Added `safeDisplayOnly` as an explicit opt-in used by `/errors` only, keeping `/errors` on the central safe display helper without changing other admin views.
+- **`src/lib/brokerErrors.ts`, `src/lib/errors.ts`:**
+  - Extended the existing broker classifier and structured reason-code normalization for `symbol not found`, `no broker session`, and broker verification failure, plus common known structured broker categories such as unknown ticket, trading disabled, HTTP 5xx, and rate limit.
+- **Verification:** `npm.cmd run typecheck` passed before this entry; full validation pending in this turn.
+
+### 2026-08-24 - Errors page useful legacy fallback copy + deferred linked-log enrichment
+
+- **Context (user request):** urgent `/errors` improvement before standup: make unknown legacy failures operator-useful without fabricating root causes, and stop linked execution-log enrichment from blocking initial page render.
+- **`src/lib/errors.ts`:**
+  - Added a central `errorDisplayForItem()` display helper that returns safe title, reason label, explanation, next action, evidence label, and cause grouping key.
+  - Changed legacy fallback root causes from `Detailed reason unavailable` / `Safe legacy fallback` to operation-specific titles with `Reason not recorded`, preserving known operations such as `No position opened`, `Management modification failed`, `Trade reconciliation failed`, `Order send failed`, `Trade close failed`, `Trade modification failed`, and `Basket protection sync failed`.
+  - Kept existing structured precedence: `trade_failure`, `reason_code`, explicit failure/skip reason, normalized broker classifier, then operation fallback.
+- **`src/pages/ErrorsPage.tsx`:**
+  - Removed the blocking loop that fetched linked execution logs for every `entry_not_opened` failed signal before first render.
+  - Base `/errors` now renders after the four normal source queries plus display-name/broker-label lookups; linked execution-log enrichment runs only for current visible page rows and for an opened row.
+  - Failure-cause grouping now uses the safe display key, so unknown rows group by operation (`No position opened - Reason not recorded`, `Management modification failed - Reason not recorded`, etc.) instead of one generic bucket.
+- **`src/components/ErrorDetailModal.tsx`:**
+  - Uses the same central safe display helper for "Why this error happened" and "What actually happened" instead of falling back to arbitrary `error.cause` text.
+  - Shows `Loading diagnostic evidence...` while supplemental linked-log diagnostics are loading.
+- **Verification:** `npm.cmd run typecheck` passed; `npm.cmd run lint` passed with 0 errors and 2 pre-existing Fast Refresh warnings; `npm.cmd run build` passed with existing Browserslist/chunk-size warnings; `git diff --check` passed with line-ending warnings only; conflict-marker scan passed.
+- **Follow-up:** browser/staging validation still required for live Supabase data. Base execution-log rows still select request/response payload columns because current structured failure evidence is stored there; the newly deferred payload reads are the supplemental linked logs for failed signals.
+
+### 2026-08-21 - Admin Errors safe detail restore + safe AI explainer path
+
+- **Context (user request):** restore useful Admin Error Detail operator diagnostics regressed by the recent Errors privacy work, without touching trading logic, the TSCopier worker, bare BUY/SELL behavior, or re-enabling arbitrary raw payload rendering.
+- **`src/components/ErrorDetailModal.tsx`:**
+  - Added a safe `Signal / trade details` section built only from known parsed fields and structured trade rows: symbol, BUY/SELL side, entry/range, SL, TP levels, lot/volume, signal time, channel, broker/account label, operation, ticket/reference, signal status, and account outcome.
+  - Added a safe `Telegram signal summary` that reconstructs the operator-facing signal from parsed fields only. It does not render raw Telegram text or arbitrary `parsed_data` JSON.
+  - Restored an Errors-modal AI action as `Explain with AI`, but it now sends only curated `safe_error_context` instead of using the existing raw signal explainer path.
+- **`supabase/functions/trade-pipeline-explainer/index.ts`:**
+  - Added a new `safe_error_context` mode. It does not query signals, trades, listener events, execution payloads, or raw Telegram messages.
+  - Server-side sanitization keeps only allowlisted keys and drops raw/payload/request/response/error-message/session/auth/token/password/cookie/API-key/OTP/hash/phone-looking fields before calling OpenAI.
+  - Prompt rules require the AI to use only supplied evidence and to say evidence is insufficient for `Detailed reason unavailable` / legacy fallback cases.
+- **`src/lib/errors.ts`:**
+  - Added management-aware status copy for structured execution failures: `Management breakeven failed`, `Take-profit management failed`, `Close failed`, and `Synchronization failed`, while preserving `Trade not opened` only for entry context.
+  - Added structured `INVALID_STOPS` / broker-stops reason support and kept legacy unknown rows neutral as `Detailed reason unavailable`.
+- **`src/hooks/useSignalPipeline.ts`:** included safe linked-trade fields (`sl`, `tp`, `lot_size`, `broker_account_id`) so the Errors modal can show useful trade facts without payloads.
+- **Verification:** `npm.cmd run typecheck` passed; `npm.cmd run lint` passed with 0 errors and 2 pre-existing Fast Refresh warnings; `npm.cmd run build` passed with existing Browserslist/chunk-size warnings; `git -c safe.directory=... diff --check` passed with line-ending warnings only; conflict-marker scan passed; targeted privacy scan confirmed the Errors modal safe AI call uses `safe_error_context` and the full pipeline raw sections remain behind `hideRawData`.
+- **Follow-up:** browser validation could not be completed in this environment because Vite background launch attempts timed out and no localhost server stayed running. Validate on staging in the browser before merge/deploy, especially the AI edge function after deploying the updated Supabase function.
+
+### 2026-08-19 - Admin Errors continuation audit: parser-success trace made conservative
+
+- **Context (user request):** continue the interrupted admin error-diagnostics blocker fix without reimplementing, resetting, committing, pushing, deploying, migrating, installing packages, or connecting to staging/prod. First audited the existing uncommitted implementation against the CTO checklist.
+- **Blocker found:** `hasParseSuccessEvidence()` still treated generic `parsed_data` fields (`action`, `symbol`, `direction`, `side`, `confidence`, `_intent.kind`) as positive proof of successful parsing. The repo evidence shows those fields are displayed as parsed payload, but does not prove they only exist after a completed parser success path.
+- **`src/lib/errors.ts`:** narrowed parser success evidence to explicit `_verification` chain records (`final`, `deterministic`, `stage2`, or `stage3`) and changed the trace copy from generic parsed-data wording to `verification chain recorded`.
+- **`src/lib/errors.ts`:** split deferred-pending terminal outcomes from completed retry recovery. Pending rows now produce `Deferred pending registered` or `Recovered with pending accounts` instead of being described as completed success.
+- **`src/components/ErrorDetailModal.tsx`:** changed the AI explainer context for the Errors modal so safe mode asks for safe root-cause wording and explicitly says not to include raw payloads or arbitrary raw error text.
+- **`src/components/ErrorDetailModal.tsx`:** pending broker-account outcomes now render with the warning badge tone instead of muted.
+- **`src/components/pipeline/SignalPipelineBody.tsx`:** when `hideRawData` is active, the raw-data AI explainer section is now hidden too. The edge function intentionally sends raw Telegram text and full execution payloads for normal signal/report views, so hiding only JSON viewers was not a hard privacy boundary for the Errors modal.
+- **Deliberately not changed:** retry terminal-outcome selection, multi-account aggregation, supplemental linked-log query shape, counts, filters, pagination, analytics, and shared pipeline raw diagnostics outside the Errors modal.
+- **Follow-up:** validate the conservative parser trace against staging records that include and omit `_verification` before merge/deploy.
+
+### 2026-08-19 - Admin Errors: deterministic `entry_not_opened` root-cause diagnostics
+
+- **Context (user request):** finish the CTO-reviewed gap where `entry_not_opened` remained the largest bucket but still did not explain why trades were not entered. Scope stayed admin-only: no TSCopier edits, no DB migrations, no prod connection, no deploy, no commit, no query/count/date/pagination/analytics semantics change.
+- **Root cause found:** `/errors` built failed `signals` rows and failed/error `trade_execution_logs` rows independently. A failed signal with `skip_reason='entry_not_opened'` was not enriched from its linked execution logs by `signal_id`, so the row and modal often stopped at generic "No position opened" even when `request_payload` / `response_payload` carried structured `trade_failure`, `reason_code`, `failure_reason`, `skip_reason`, broker error evidence, or a later account-specific failure.
+- **`src/lib/errors.ts`:**
+  - Added central pure root-cause diagnostics for `entry_not_opened`: structured `trade_failure` -> structured `reason_code` -> explicit `failure_reason` / `skip_reason` (except fallback `entry_not_opened`) -> normalized broker classification -> execution `error_message` -> neutral legacy fallback.
+  - Added structured reason-code copy for known codes such as `BROKER_SYMBOL_NOT_FOUND`, `SIGNAL_MISSING_REQUIRED_SL`, `INSUFFICIENT_MARGIN`, `MARKET_CLOSED`, and `BROKER_TIMEOUT`, while preferring stored structured title/explanation/action when present.
+  - Added account-level diagnostics for fan-out signals. Linked logs are grouped by `broker_account_id`; each account uses the latest meaningful failure evidence by `created_at`; mixed failures summarize at signal level and preserve per-account reasons.
+  - Added a lightweight trace (`Signal received`, `Signal parsed`, `Execution planned` / `Deferred pending registered`, `Broker attempted`, `Outcome`) using existing evidence only.
+  - Tightened `safeContext` to an allowlist plus sensitive-key exclusion before display.
+- **`src/pages/ErrorsPage.tsx`:**
+  - Fetches linked execution logs for already-loaded failed signals by `signal_id` in chunked/paginated supplemental reads. These rows only enrich diagnostics; they are not added to the error list, so `filtered.length`, total counts, date filters, pagination, and analytics source semantics remain unchanged.
+  - `entry_not_opened` list rows now show concise diagnostic labels such as `No position opened - Symbol not found`, `No position opened - Insufficient margin`, or `No position opened - Detailed reason unavailable`.
+- **`src/components/ErrorDetailModal.tsx`, `src/components/pipeline/SignalPipelineBody.tsx`, `src/components/pipeline/PipelineSections.tsx`:**
+  - Error detail now answers status, stage, reason, explanation, recommended action, evidence source, diagnostic trace, and broker-account outcomes.
+  - The Errors modal passes `hideRawData` into the full pipeline view so raw Telegram messages, parsed payload JSON, request payloads, response payloads, and payload-derived issue markers are not rendered in this diagnostic context.
+- **Verification:** `npm.cmd run typecheck` passed, `npm.cmd run lint` passed with 0 errors and 2 pre-existing Fast Refresh warnings, `npm.cmd run build` passed with pre-existing Browserslist/chunk-size warnings.
+- **Follow-up:** validate against staging data in the browser before merge/deploy. If linked execution logs for older `entry_not_opened` records do not contain structured/explicit/broker/error evidence, admin will correctly show `Detailed reason unavailable`; no TScopier change is required unless staging proves current worker events still fail to store the needed evidence.
+
+### 2026-08-14 — Error classification audit blockers fixed: safeContext privacy + parser-stage evidence narrowed
+
+- **Context (user request):** fix only the two blockers from the final read-only audit of the admin error-classification patch. No query/count/analytics changes, no modal redesign, no TSCopier changes, no DB/migration/deploy/commit/prod access.
+- **`src/lib/errors.ts`:**
+  - `safeContext` now excludes sensitive-looking keys matching `token|secret|password|credential|session|auth|authorization|key|phone|otp|hash|cookie|bearer` case-insensitively. This covers common styles such as `phone_number`, `otpCode`, `phoneCodeHash`, `sessionString`, `accessToken`, `apiKey`, `authorizationHeader`, `set_cookie`, and `bearer_token`. Sensitive fields are excluded entirely; values are not sanitized/retained.
+  - Parser-failure classification no longer treats plain `parsed_data.stage === "parse"` as proof of parse failure. Accepted parser evidence remains explicit cause keys (`parse_failed`, `signal_parse_failed`, `parser_failed`, `signal_parser_failed`) and explicit failure-stage fields (`failed_stage` / `failure_stage`) identifying parser stage.
+- **Verification:** `.\node_modules\.bin\tsc.cmd --noEmit -p tsconfig.app.json` ✓, `.\node_modules\.bin\eslint.cmd .` ✓ (0 errors; 2 pre-existing Fast Refresh warnings), `npm.cmd run build` ✓ (pre-existing Browserslist/chunk-size warnings), `git diff --check` ✓ (line-ending warnings only), conflict-marker scan ✓.
+
+### 2026-08-14 — Errors page: stop labeling every failed signal as "Signal parse failed"
+
+- **Context (user request):** implement the minimal admin-only fix from the read-only audit: `signals.status = failed` does not prove parser failure, and `entry_not_opened` must not display as "Signal parse failed." No TSCopier worker changes, DB migrations, production access, deploy, commit, or count/analytics changes.
+- **`src/lib/errors.ts`:**
+  - Added a centralized pure classification path for failed signal rows. `Signal parse failed` is now used only when explicit parser-stage evidence exists (`parse_failed`/parser failure keys or parser-stage markers in parsed data). Generic failed signals now show `Signal failed`; `entry_not_opened` shows `No position opened`.
+  - Added defensive structured failure extraction for existing selected execution payloads (`reason_code`/`reasonCode`, `trade_failure`/`tradeFailure`, safe fields such as `title`, `explanation`, `recommendedAction`, `retryable`, `userActionRequired`, and allowlisted `safeContext`). Structured metadata now takes precedence over legacy `error_message`/regex fallback when present.
+  - Added item-level severity classification so structured `retryable:false` is respected instead of being described as transient/retryable by regex.
+- **`src/pages/ErrorsPage.tsx`:** switched severity calculations/display to the item-level classifier. Did not change the four source queries, date filters, aggregation sources, pagination, `/errors` total (`filtered.length`), or `/errors/analytics`.
+- **`src/components/ErrorDetailModal.tsx`:** modal now prefers structured title/explanation/recommended action when available and avoids the generic "Transient = retry" wording when structured metadata says `retryable:false`. No retry controls were added.
+- **Verification:** `.\node_modules\.bin\tsc.cmd --noEmit -p tsconfig.app.json` ✓, `.\node_modules\.bin\eslint.cmd .` ✓ (0 errors; 2 pre-existing Fast Refresh warnings), `npm.cmd run build` ✓ (pre-existing Browserslist/chunk-size warnings), `git diff --check` ✓ (line-ending warnings only), conflict-marker scan ✓.
+- **Follow-up:** add regression tests if/when this repo gains a test harness; validate on staging data before merge/deploy.
 
 ### 2026-08-11 — Model decision chain: truthful Cerebras labels + fallback notes gated on evidence (admin display fix)
 
