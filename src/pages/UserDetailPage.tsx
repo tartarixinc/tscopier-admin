@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Server, MessageSquare, Zap, TrendingUp, FlaskConical, Mail, Send, ScrollText, ChevronDown } from 'lucide-react';
+import { ArrowLeft, Server, MessageSquare, Zap, TrendingUp, FlaskConical, Mail, Send, ScrollText, ChevronDown, ChevronRight } from 'lucide-react';
 import { authSupabase as adminSupabase } from '../lib/adminSupabase';
 import { formatDate, formatDateOnly, formatCurrency } from '../lib/formatters';
 import { Card, CardHeader, CardContent } from '../components/ui/Card';
 import { StatusBadge } from '../components/StatusBadge';
 import { Button } from '../components/ui/Button';
+import { Modal } from '../components/ui/Modal';
+import { ChannelBrokerConfigs } from '../components/user/ChannelBrokerConfigs';
+import { Pagination } from '../components/DataTable';
 import { UserActivityTabs } from '../components/user/UserActivityTabs';
 
 interface UserProfile {
@@ -58,6 +61,9 @@ interface BrokerRow {
   platform: string | null;
   connection_status: string | null;
   last_balance: number | null;
+  last_equity: number | null;
+  account_login: string | null;
+  channel_trading_configs: unknown;
 }
 
 interface ChannelRow {
@@ -92,6 +98,7 @@ interface LeaseRow {
 }
 
 const LIVE_ROLES = new Set(['listener', 'all', 'channel_listener']);
+const CHANNELS_PAGE_SIZE = 5;
 
 function isLeaseLive(lease: LeaseRow | null | undefined): boolean {
   if (!lease?.expires_at) return false;
@@ -131,6 +138,8 @@ export function UserDetailPage() {
   const [showBrokers, setShowBrokers] = useState(false);
   const [showChannels, setShowChannels] = useState(false);
   const [showReportedTrades, setShowReportedTrades] = useState(false);
+  const [channelPage, setChannelPage] = useState(1);
+  const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
 
   const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
   const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -190,6 +199,8 @@ export function UserDetailPage() {
     }
   }
 
+  useEffect(() => { setChannelPage(1); setSelectedChannelId(null); }, [userId]);
+
   useEffect(() => {
     if (!userId) return;
     async function load() {
@@ -209,7 +220,7 @@ export function UserDetailPage() {
       ] = await Promise.all([
         adminSupabase.from('user_profiles').select('*').eq('user_id', userId!).maybeSingle(),
         adminSupabase.from('subscriptions').select('*').eq('user_id', userId!).maybeSingle(),
-        adminSupabase.from('broker_accounts').select('id, label, platform, connection_status, last_balance').eq('user_id', userId!),
+        adminSupabase.from('broker_accounts').select('id, label, platform, connection_status, last_balance, last_equity, account_login, channel_trading_configs').eq('user_id', userId!),
         adminSupabase.from('telegram_channels').select('id, display_name, channel_username, is_active, last_live_at').eq('user_id', userId!),
         adminSupabase.from('trade_reports').select('id, symbol, direction, reason, status, created_at').eq('user_id', userId!).order('created_at', { ascending: false }),
         adminSupabase.from('backtest_runs').select('*', { count: 'exact', head: true }).eq('user_id', userId!),
@@ -469,21 +480,40 @@ export function UserDetailPage() {
         </CardHeader>
         {showChannels && (
           <div className="overflow-x-auto">
+            {channels.length > 0 && (
+              <p className="px-4 pt-3 text-[11px] text-slate-400 dark:text-slate-500">
+                Click a channel to see broker configurations
+              </p>
+            )}
             <table className="table-base">
-              <thead><tr><th>Name</th><th>Username</th><th>Active</th><th>Last Live</th></tr></thead>
+              <thead><tr><th>Name</th><th>Username</th><th>Active</th><th>Last Live</th><th /></tr></thead>
               <tbody>
                 {channels.length === 0 ? (
-                  <tr><td colSpan={4} className="text-center py-6 text-slate-400">No channels</td></tr>
-                ) : channels.map((c: ChannelRow) => (
-                  <tr key={c.id}>
-                    <td className="font-medium">{c.display_name}</td>
+                  <tr><td colSpan={5} className="text-center py-6 text-slate-400">No channels</td></tr>
+                ) : channels.slice((channelPage - 1) * CHANNELS_PAGE_SIZE, channelPage * CHANNELS_PAGE_SIZE).map((c: ChannelRow) => (
+                  <tr
+                    key={c.id}
+                    onClick={() => setSelectedChannelId(c.id)}
+                    className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
+                  >
+                    <td className="font-medium text-primary-600 dark:text-primary-400">{c.display_name}</td>
                     <td className="text-slate-500">{c.channel_username}</td>
                     <td><StatusBadge status={c.is_active ? 'active' : 'inactive'} /></td>
                     <td className="text-xs text-slate-400">{formatDate(c.last_live_at)}</td>
+                    <td className="w-8 text-slate-300 dark:text-slate-600"><ChevronRight className="w-4 h-4" /></td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            {channels.length > CHANNELS_PAGE_SIZE && (
+              <Pagination
+                page={channelPage}
+                totalPages={Math.max(1, Math.ceil(channels.length / CHANNELS_PAGE_SIZE))}
+                totalCount={channels.length}
+                pageSize={CHANNELS_PAGE_SIZE}
+                onPageChange={setChannelPage}
+              />
+            )}
           </div>
         )}
       </Card>
@@ -523,6 +553,22 @@ export function UserDetailPage() {
 
       {/* User activity tabs */}
       <UserActivityTabs userId={profile.user_id} counts={counts} />
+
+      {/* Channel broker configs modal */}
+      {selectedChannelId && (() => {
+        const ch = channels.find(c => c.id === selectedChannelId);
+        if (!ch) return null;
+        return (
+          <Modal
+            open
+            onClose={() => setSelectedChannelId(null)}
+            title={ch.display_name ?? 'Channel'}
+            subtitle={ch.channel_username ? `@${ch.channel_username}` : undefined}
+          >
+            <ChannelBrokerConfigs channel={ch} brokers={brokers as never} />
+          </Modal>
+        );
+      })()}
     </div>
   );
 }

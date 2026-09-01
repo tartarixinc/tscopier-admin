@@ -1,7 +1,138 @@
+# Systems Health — Operations Cockpit Plan v2 (verified 2026-08-25)
+
+Supersedes v1 (below, kept for history). v2 incorporates three audit rounds:
+signal-lifecycle semantics, prod data availability, and query/latency verification.
+
+## Goal
+
+A full operations cockpit at `/monitoring/systems-health` in tscopier-admin: data-dense,
+every signal accounted for, blockages visible anywhere (counts AND ages), every number
+explainable, unknown sources never rendered green.
+
+---
+
+## 1. Command header
+
+Environment badge · freshness stamp · overall verdict · headline counters
+(workers online, users listening, brokers connected, executions in window) · DB clock offset.
+Single shared refresh cycle; stale-data banner + exponential backoff on unreachable DB.
+
+## 2. Signal flow control board
+
+Full accounting — every windowed signal lands in exactly one bucket:
+
+| Stage | Definition | Query |
+|---|---|---|
+| Received | all rows projected in window | head-count `created_at >= since` |
+| Tradeable | entered execution funnel: `status IN ('parsed','executed','failed')` | head-count |
+| Dispatched (attempts) | distinct `signal_id` among claims created in window; labeled attempts (claims are a mutex — deleted on range-wake/retry) | one bounded windowed fetch + client distinct |
+| Executed | `status='executed'` (proof-gated upstream by signalExecutionProven) | head-count |
+| Failed | `status='failed'` (broker attempted, nothing opened) | head-count |
+| Filtered out | `status='skipped'` — exit lane with skip-reason breakdown, NOT a stage | head-count |
+| Pending in flight | `status='pending'` + oldest age (>15 min warn / >60 min or >10 stuck red) | oldest-row fetch |
+
+**Stage ages:** median/P95 per stage from `pipeline_ts` epoch-ms keys.
+Verified mapping (worker/src/pipelineTimestamps.ts):
+- Parse latency = `parse_completed_at − parse_started_at`
+  (fallback end `t_parse_done ?? t_ai_parse_done`; fallback start `telegram_message_received_at`)
+- Dispatch/handoff latency = `queue_consumed_at − t_dispatch_sent` (fallback start `queue_published_at`)
+- End-to-end = `trade_execution_logs.pipeline_summary.total_ms` (`action='pipeline_summary'`)
+  — execution-phase stamps do NOT live in signals.pipeline_ts
+- Each metric counts its own samples; documented gaps: primary-projector rows drop
+  pipeline_ts, revision re-dispatch overwrites it, FK-stub rows have none,
+  `reconciliation_*` keys are dead code.
+
+## 3. Worker fleet table
+
+One row per live replica. Parse `worker_id` defensively: segment[0]=role prefix
+(`listener`|`channel_listener`), [1]=shard, LAST=build tag, middle=instance
+(instance may contain colons — `hostname:pid`). Only listener roles write leases today.
+Columns: role · shard · leases held · last heartbeat · build. Shard-count disagreement
+highlighted. Zero rows = red.
+
+## 4. Telegram connectivity
+
+Linked (`telegram_sessions` rows — invalidation deletes rows, nothing sets is_active=false)
+· Listening now (fresh listener-role leases ≤120s) · Auth pending (`telegram_auth_pending`
+non-expired). Flagged list: linked-but-not-listening users (support's top ticket).
+Upgrade path: when prod workers ship PR #82, `copier_listener_health` fills and the tile
+switches to per-user listener_status/MTProto state automatically (expected empty until then).
+
+## 5. Broker connections
+
+`broker_accounts.connection_status` mix (connected/recovering/error) + top
+connection_error_kind table + affected-user counts. Answers "broker outage vs our bug".
+
+## 6. Execution quality
+
+Failure buckets (system/external/user/unclassified; UNCLASSIFIED never alarms) ·
+escalation ≥2 users AND ≥5 occurrences AND >5× floored baseline · recent failed-signals
+table · success rate excluding user-bucket noise.
+Execution-log statuses are ONLY attempt|success|failed|skipped (no rejected/error).
+
+## 7. Queue & dead letters
+
+Dead-letter table by lane/status/attempts with replay links; unresolved count;
+oldest pending age. RLS caveat: dead letters has no admin SELECT policy in repo —
+verify prod before shipping this panel or it renders silent-empty.
+
+## 8. Support console
+
+Paste user_id → last-24h per-user: signal counts by status, recent signals+skip reasons,
+lease state, telegram linkage, broker connection states. Feasibility proven:
+idx_signals_user_created_at exists; UserDetailPage already runs the same shapes.
+
+## 9. Diagnostics drawer
+
+Unreadable/saturated sources with exact errors · clock offset · escalation reference ·
+per-source freshness.
+
+---
+
+## Alarm rules (the only things that go amber/red)
+
+1. Stuck-parsed alarm: `status='parsed'` beyond 10-min grace EXCLUDING range-parked
+   (`signal_range_entry_waits.status='waiting'`); warn ≥3–5 stuck confirmed twice ~5 min apart.
+   Claims-based "dispatched minus executed" is INVALID (claim deletions undercount).
+2. `failed` signals present beyond noise floor (same escalation gates as buckets).
+3. Workers zero / shard mismatch / queue stuck / dead letters ≥20 / broker connected=0
+   while listening>0 / linked≫listening gap.
+4. Unknown/unreadable source ⇒ verdict "cannot be determined" — never green.
+
+## Engineering rules
+
+Exact head-counts everywhere (count=exact, zero rows) — immune to Supabase 1000-row cap.
+Server-clock windows from lease heartbeats only. Hysteresis keyed per window.
+Unmount-safe setState. No raw payloads outside existing modals. Env badge in page body.
+
+## Required migrations (apply STAGING first)
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_signals_created_at ON public.signals (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trade_exec_logs_created_at ON public.trade_execution_logs (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dispatch_claims_created_at ON public.signal_broker_dispatch_claims (created_at);
+```
+
+Pre-launch checklist: verify on PROD that public.is_admin() exists, admin SELECT policies
+exist for signal_broker_dispatch_claims AND signal_queue_dead_letters, and no new missing
+migrations (see docs/prod-missing-migrations-2026-08-16.md precedent).
+
+## Build phases
+
+- Phase A: index migration file + systemHealth.ts rework (head-counts, ts-key aliases,
+  stuck-alarm formula, latency metrics incl. logs join) + header, flow board, fleet, queue.
+- Phase B: Telegram/broker/execution sections with fallback sources.
+- Phase C: support console + diagnostics drawer + prod verification checklist.
+
+---
+---
+
+# v1 PLAN (historical)
+
 # Systems Health Page — Plan (approved 2026-08-25)
 
 Single admin page at `/monitoring/systems-health` answering one question at a glance:
-is the platform working right now, and if not, which part?
+is everything working right now, and if not, what part?
 
 ## Decisions approved
 
@@ -18,96 +149,39 @@ is the platform working right now, and if not, which part?
    `copier_listener_health` (DB ground truth written by workers). No Railway-log
    edge function in this phase.
 
-## Design
+(Design details of v1 intentionally retained in git history; see commit e9ce213.)
 
-### Three-layer progressive disclosure
-- **Layer 1 — verdict sentence.** Computed only from System-bucket checks.
-  States: "Everything is working normally." / "N things need attention." /
-  "Health cannot be fully determined." (any unreadable source forces this).
-- **Layer 2 — six tiles** (one number + one word each):
-  Trade copying · Telegram connection · Broker orders · Workers running ·
-  Waiting queue · User sessions.
-- **Layer 3 — pipeline strip** (blockage spotter):
-  `Received → Parsed → Dispatched → Executed`, counts per stage over a selectable
-  window (1h/6h/24h). A stage where counts pile up turns amber/red with a plain-
-  English hover sentence; clicking deep-links to the relevant detail page.
+## Post-build corrections (2026-08-25, live-data verification)
 
-### Ownership buckets (definitive data, not noise)
-Every classified error maps to exactly one bucket:
-- **System** — worker down, stuck queue, stale claims, DB errors. Always counts.
-- **External** — market closed, third-party outage. Counts only if widespread.
-- **User** — insufficient funds/margin, invalid lot, expired session. Never counts
-  toward system health unless escalation thresholds (above) are met.
-Unknown/unmatched reasons go to an explicit `UNCLASSIFIED` bucket, counted but
-never silently treated as System or User.
+Verified the dashboard against real prod data via SQL the admin ran in the
+Supabase editor. Three real bugs surfaced and were fixed:
 
-### Pipeline stage definitions (review-corrected)
-- Received: `signals.created_at` in window.
-- Parsed: `pipeline_ts.parsed_at` in window; fallback `status != 'pending'` with
-  `created_at` in window (legacy rows).
-- Dispatched: **distinct** `signal_id` count from `signal_broker_dispatch_claims`
-  with `created_at` in window (claims fan out per broker — never compared raw).
-- Executed: `status='executed'` signals whose `pipeline_ts.executed_at`
-  (fallback `updated_at`) falls in the window.
-Known distortion documented in-page: `trade_execution_logs` retention keeps newest
-500 rows/user, so log-based counts are annotated as approximate.
-Replays re-enter mid-funnel via `pipeline_ts.parsed_at`; they are counted as Parsed
-only if that timestamp lies inside the window.
+1. **Failure reasons read the wrong column.** Worker writes `reason_code` into
+   `request_payload`, not `response_payload` — everything showed UNCLASSIFIED.
+   Fixed the read + verified against live data (INVALID_STOPS, BROKER_ORDER_REJECTED,
+   INSUFFICIENT_MARGIN now classify correctly).
+2. **Classifier taxonomy too small.** Only ~5 codes known; real worker codes
+   (QUEUE_*, *_FAILED, COPIER_ENGINE_OFFLINE, INVALID_STOPS, UNKNOWN_TICKET,
+   BROKER_EA_NOT_READY) fell into UNCLASSIFIED and were silently quarantined.
+   Expanded to the worker's full set + known broker rejection texts.
+3. **telegram_auth_pending forced "cannot determine".** Worker-only table, no
+   admin SELECT policy → its query error polluted unreadableSources → permanent
+   undetermined verdict. Now best-effort (shows 0, never blocks verdict).
 
-### Clock handling
-All ages compare DB timestamps against a server-time estimate derived from
-`max(signals.updated_at)` (clock-offset proxy), never raw laptop time.
+Also fixed: "Linked but not listening" rendered 54 raw UUIDs → now display names,
+capped + collapsible. Added Support Console (paste user_id → pipeline + connection
+state). Added UNCLASSIFIED-drift guard (if >50% of failures lack a reason, warn —
+catches a worker regression that would silently re-hide everything).
 
-### Stability rules
-- Hysteresis: a check must fail 2 consecutive samples before showing red;
-  recover to green only after 2 consecutive healthy samples.
-- One shared fetch cycle fans out all queries; on repeated failure the page shows
-  an explicit "Cannot reach database — showing data from HH:MM:SS" banner and
-  backs off instead of hammering.
-- Environment badge rendered inside the page body (not just the shell).
+Known env gap (not a code bug): `broker_accounts.connection_error_kind` missing on
+STAGING (migration drift) — broker error-kinds list renders only on prod until that
+migration is applied to staging.
 
-### Checks → tiles mapping
-| Tile | Source | OK | Warn | Fail |
-|---|---|---|---|---|
-| Workers running | `worker_session_leases` | active leases > 0, consistent shard_count | shard_count inconsistency across leases | 0 active leases |
-| Telegram connection | `copier_listener_health` | all connected, fresh `updated_at` (< freshness_threshold_ms) | some reconnecting/stale | majority failed/disconnected |
-| User sessions | `copier_listener_health` + leases | matches expectations | N users disconnected | — |
-| Waiting queue | `signals.status='pending'` age + dead letters unresolved | nothing stuck older than 15 min | stuck pending > 0 / few dead letters | many stuck |
-| Broker orders | `trade_execution_logs` outcomes + classification | success rate high after excluding User bucket | elevated System/External errors | execution failing broadly |
-| Trade copying | pipeline strip health (drop-off between stages) | flow-through normal | mild drop-off | hard blockage |
-
-## Out of scope (later phases)
-Railway-log edge function tile · cron/CI alerting · historical trend charts.
-
-## Implementation status (2026-08-25)
-
-Built and verified: typecheck ✓, eslint (changed files) ✓, vite build ✓.
-Files: src/lib/systemHealth.ts, src/pages/SystemHealthPage.tsx, routes in
-src/App.tsx, sidebar entry in src/components/AdminShell.tsx.
-
-Review cycle: code-review initially FAIL (2 HIGH blockers + 5 MEDIUMs); all
-fixed and re-reviewed PASS (A-/A/A/A-). Fixes applied:
-- Query-cap saturation → source unreadable → verdict "undetermined" (never green).
-- Baseline via exact head-count; backoff/stale-banner now engage on !dbReachable.
-- Executed stage counts pre-window signals executed inside the window
-  (second bounded fetch on updated_at, merged by id, window-checked).
-- Single server-clock base for every window bound; hysteresis keyed per window;
-  unmount-safe setState; empty copier_listener_health renders unknown, not green.
-Remaining follow-ups: Railway-log edge-function tile (phase 2), cron/CI alerting,
-classifier parity test vs worker's classifyBrokerFailureReason.
-
-## Correction (2026-08-25, after first prod run)
-
-First production render was misleading — three defects, all fixed:
-1. `signals` has NO `updated_at` column (schema assumption wrong). Clock probe
-   now uses `worker_session_leases.updated_at` (fallback `copier_listener_health`);
-   executed-stage windowing uses only `pipeline_ts.executed_at`, with the
-   documented approximation that pre-window signals executing in-window are
-   not counted.
-2. Funnel could show a fake blockage when one source failed and another
-   succeeded (e.g. Dispatched=307 vs Received=0). Funnel is now marked
-   unreliable unless BOTH sources read cleanly; the strip renders an explicit
-   "cannot show" state instead of numbers.
-3. UNCLASSIFIED errors were silently counted as system failures on the Broker
-   orders tile. Per plan, unclassified never drives alerts — it appears in the
-   details table for weekly review only.
+## Deploy status
+- Railway storm fix: origin/staging + upstream staging+dev (fe0bd785). Railway verified
+  healthy both envs (no storm, 0 rate limits). PROD still on pre-fix code — must reach
+  prod (gated on staging validation).
+- Admin cockpit + edge function: built + verified locally; NOT deployed. Deploy requires
+  a working Supabase CLI token (`supabase login` — current ~/.supabase/access-token is
+  Unauthorized) to apply index migration to staging + deploy systems-health-railway fn.
+- No commits yet (per user).

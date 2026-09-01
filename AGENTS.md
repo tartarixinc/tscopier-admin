@@ -1,5 +1,8 @@
 # tscopier-admin — Agent Guide
 
+## Documentation & responses
+- All documentation, comments, and agent responses must be written in **plain, professional English** — clear, direct, and free of jargon where a simple word works.
+
 ## Session Context (2026-08-10) — Fresh agent onboarding; AGENTS.md + PROJECT_MEMORY.md created
 
 **What this repo is:** the internal admin dashboard for the TSCopier copier platform

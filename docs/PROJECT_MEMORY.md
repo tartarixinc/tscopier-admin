@@ -2,6 +2,60 @@
 
 ## Changelog
 
+### 2026-08-28 — Channel broker configs modal: section tabs + field alignment with main site
+
+- **Context:** the channel broker configs modal (opened from User Detail → Telegram Channels → click a channel) showed all setting sections stacked vertically. The user wanted tabbed navigation matching the main site's configure modal (AccountConfigPage). Additionally, the admin's section grouping had fields in the wrong tabs compared to the main site's actual tab layout.
+- **New feature — section tabs:**
+  - Added tab bar (using `ui/Tabs` component) above broker cards, gated on `hasManual` (only shown when at least one manual broker has settings).
+  - Tab list is the union of sections present across linked brokers — only tabs with data appear.
+  - Each broker card renders only the active tab's section, not all sections stacked.
+  - Tabs match the main site's canonical names and icons: Signal Examples (`MessageSquareText`), Symbols (`Coins`), Instructions (`ScrollText`), Risk (`Wallet`), Targets (`Target`), Management (`Settings2`), Filters (`Filter`).
+  - AI-mode brokers always show AI description + JSON regardless of active tab.
+- **Field alignment fixes (admin `describeManualSettings` → main site `AccountConfigPage`):**
+  - `signal_entry_pip_tolerance`, `use_signal_entry_price`, `use_signal_entry_range`: moved from Symbols → Risk.
+  - `reverse_signal`: moved from Symbols → Management.
+  - `rr_for_sl_enabled`, `rr_for_sl`, `rr_for_tps_enabled`, `rr_for_tps`: moved from Targets → Management.
+  - `partial_close_percent` → `half_close_percent` (field name now matches main site).
+- **Missing fields added:**
+  - Risk: `range_layer_till_close`, `range_layering_type`, `single_tp_target`.
+  - Management: `move_sl_to_entry_tp_index`, `move_sl_to_entry_type`.
+  - Filters: `close_before_news_minutes`, `resume_after_news_minutes`.
+- **Unlinked brokers sidebar:** went through several iterations (verbose list → compact list → dropdown), then removed entirely per user request. The empty state in the linked-brokers section still references `unlinked.length` for context ("The user has N broker accounts but none are connected").
+- **DRY improvement:** extracted `asManualSettings(raw)` helper to deduplicate the manual_settings type guard across `BrokerConfigCard` and `sectionIdsForBrokers`.
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors), `npm run build` ✓.
+- **Files changed:** `src/components/user/ChannelBrokerConfigs.tsx`.
+- **Follow-up:** none.
+
+### 2026-08-26 — User detail: channel broker configs modal + 5-per-page pagination
+
+- **Context:** admin wanted to click a user's Telegram channel and see the full broker trading configuration for that channel (copier mode, lot sizing, SL/TP, trailing, filters, etc.) — not just the channel name and status.
+- **Data layer:** the authoritative `broker_channel_trading_configs` normalized table is NOT admin-readable (RLS is owner-only, grants only `authenticated`). However, `broker_accounts.channel_trading_configs` JSONB mirror — trigger-synced from the same source — IS readable via the existing admin `broker_accounts` RLS policies. Extended the existing `broker_accounts` select in `UserDetailPage.tsx:212` by three fields: `channel_trading_configs`, `last_equity`, `account_login`. No new queries, no migrations.
+- **New files:**
+  - `src/components/ui/Modal.tsx` — reusable modal: fixed overlay, centered card, Escape/backdrop close, scroll lock, mobile-safe (bottom-sheet on small screens, centered on sm+), title/subtitle/close button.
+  - `src/components/user/ChannelBrokerConfigs.tsx` — modal body: matches channel UUID against each broker's `channel_trading_configs` map (lowercased key comparison); renders per-broker config cards with natural-language labels (no raw JSON), grouped into sections: Lot sizing, Stop loss & take profit, Trade management, Entry rules, Filters & timing. AI mode shows a description sentence + collapsed JSON expander. Manual mode shows labeled settings. Unlinked brokers shown as muted dashed chips with an explanatory sentence. Empty state when zero configs.
+- **Wired in `UserDetailPage.tsx`:**
+  - Channels table rows now clickable → open modal.
+  - 5-per-page pagination via the shared `Pagination` component (`components/DataTable.tsx`), only shown when > 5 channels exist.
+  - Hint text "Click a channel to see broker configurations" when accordion is expanded.
+  - Pagination resets to page 1 on user change.
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors), `npm run build` ✓.
+- **Follow-up:** none.
+
+### 2026-08-26 — Systems Health: failure drill-down modal + plain-English escalation verdict
+
+- **Context:** user wanted to click any failure row in Systems Health → modal with full detail; escalation text was rewritten from formula-speak to plain sentences after feedback: "Nobody understands this."
+- **Data layer (`src/lib/systemHealth.ts`):**
+  - New `ErrorBucketRow` interface (`id, userId, createdAt, action, errorMessage, brokerAccountId, signalId, requestPayload, responsePayload`); `ErrorBucketSummary` gained `rows: ErrorBucketRow[]`.
+  - `trade_execution_logs` failure query now selects `id, action, broker_account_id, signal_id, created_at, response_payload` (in addition to existing columns), so each occurrence carries its raw request/response payloads for drill-down.
+  - New `failureBaselinePerWindow` field on `SystemHealthReport` — the 7-day average total failures per window — so the modal can compute the multiple in plain language.
+- **UI (`src/pages/SystemHealthPage.tsx`):**
+  - Failure table rows clickable; bucket label/style maps lifted to module scope (`BUCKET_LABEL`, `BUCKET_STYLE`).
+  - `ModalShell` gained optional `wide` prop (`max-w-4xl`, used by this modal only).
+  - New `ErrorBucketModal` — full drill-down with: stat cards (occurrences, users, first/last seen); per-user breakdown grid with `UserLink`; expandable per-occurrence list showing full error message, user/signal/broker/log IDs, and raw request/response JSON via `JsonViewer`.
+  - Escalation verdict rewritten as plain English via `escalationStory()`: states what happened, compares against the week's normal failure rate (with the real baseline number visible), and gives a verdict — no formulas, no ≥/×/AND symbols. Header reads "Should someone look at this? Yes — alarm raised" or "Should someone look at this? No alarm".
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors), `npm run build` ✓.
+- **Follow-up:** none.
+
 ### 2026-08-11 — Model decision chain: truthful Cerebras labels + fallback notes gated on evidence (admin display fix)
 
 - **Context (user report):** an Aug 11 signal showed `source: 'openai'` in the Model decision chain and a note claiming `Skipped stage 2 — Cerebras unavailable, fell back to OpenAI` even though no `ai_parse_fallback` event existed. Investigation with the main-repo worker debug endpoint (`POST <listener>/internal/parse-ai-debug`, token from user) against prod `https://tscopier-listener-production.up.railway.app` proved **Cerebras is working** on prod right now — both a modify and an entry test message went through stage 2 with `source: "cerebras"` (~700–950 ms, `mode: "fastpath"`), no fallback. The old signal's `openai` source means it was parsed while Cerebras wasn't running (pre-fix build or an outage window); that state is no longer reproducible. So no Railway/env changes were needed — only the admin display was lying to the user.
