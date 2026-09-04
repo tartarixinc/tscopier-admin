@@ -31,6 +31,8 @@ import { CopierEnginePage } from './pages/CopierEnginePage';
 import { ErrorsPage } from './pages/ErrorsPage';
 import { ErrorsAnalyticsPage } from './pages/ErrorsAnalyticsPage';
 import { ReportsPage } from './pages/ReportsPage';
+import { AssistantThreadsPage } from './pages/AssistantThreadsPage';
+import { AssistantThreadViewPage } from './pages/AssistantThreadViewPage';
 
 function ProtectedLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -74,6 +76,8 @@ export default function App() {
         <Route path="/errors" element={<ProtectedLayout><ErrorsPage /></ProtectedLayout>} />
         <Route path="/errors/analytics" element={<ProtectedLayout><ErrorsAnalyticsPage /></ProtectedLayout>} />
         <Route path="/reports" element={<ProtectedLayout><ReportsPage /></ProtectedLayout>} />
+        <Route path="/assistant-chats" element={<ProtectedLayout><AssistantThreadsPage /></ProtectedLayout>} />
+        <Route path="/assistant-chats/:threadId" element={<ProtectedLayout><AssistantThreadViewPage /></ProtectedLayout>} />
       </Routes>
     </BrowserRouter>
   );

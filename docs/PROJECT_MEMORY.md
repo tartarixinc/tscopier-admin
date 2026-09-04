@@ -2,6 +2,32 @@
 
 ## Changelog
 
+### 2026-09-02 — Admin transcript viewer: AI assistant chat history for user support
+
+- **Context:** support team needed visibility into what users discussed with the AI assistant (the in-app copier assistant chat) to diagnose issues, verify user claims, and provide informed support. Previously there was no way to view assistant conversations from the admin dashboard.
+- **New feature — Assistant Chats list page (`/assistant-chats`):**
+  - Lists all assistant threads across all users, showing user name/email, message count, created/updated timestamps.
+  - Sorted by most recently updated first.
+  - Clickable rows navigate to the full transcript view.
+  - Uses the existing `assistant_threads` table (same one the assistant chat reads/writes).
+  - Pagination via the shared `Pagination` component, 20 threads per page.
+- **New feature — Thread transcript view (`/assistant-chats/:threadId`):**
+  - Shows the full conversation: user messages and assistant responses as distinct message bubbles.
+  - User messages styled in blue, assistant messages in emerald — clearly distinguishable at a glance.
+  - Tool call results shown as expandable collapsible sections (collapsed by default, click to expand).
+  - Attached images rendered inline at 200×150px max.
+  - Back button returns to the threads list.
+  - Empty state when no messages exist in the thread.
+- **RLS migration (`20260902120000_admin_read_assistant_threads.sql`):**
+  - Added a SELECT-only policy on `assistant_threads` for admin users (via `is_admin()`), so admin dashboard queries can read thread data. Without this policy, RLS blocks admin reads entirely.
+  - **Required before the feature works:** this migration must be applied to both staging and prod Supabase projects via the SQL editor or `supabase db query --linked`.
+- **Navigation:** added "Assistant Chats" nav group in the sidebar (`AdminShell.tsx`), with links to the list page and individual thread views.
+- **Verification:** `npx tsc -b` ✓, `npm run lint` ✓ (0 errors), `npm run build` ✓.
+- **Files changed:**
+  - New: `src/pages/AssistantThreadsPage.tsx`, `src/pages/AssistantThreadViewPage.tsx`, `supabase/migrations/20260902120000_admin_read_assistant_threads.sql`
+  - Modified: `src/App.tsx` (routes), `src/components/AdminShell.tsx` (nav)
+- **Follow-up:** apply the RLS migration to staging + prod. Verify threads appear once data exists in `assistant_threads`.
+
 ### 2026-08-28 — Channel broker configs modal: section tabs + field alignment with main site
 
 - **Context:** the channel broker configs modal (opened from User Detail → Telegram Channels → click a channel) showed all setting sections stacked vertically. The user wanted tabbed navigation matching the main site's configure modal (AccountConfigPage). Additionally, the admin's section grouping had fields in the wrong tabs compared to the main site's actual tab layout.
