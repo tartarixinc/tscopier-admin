@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
+import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { authSupabase as adminSupabase } from '../lib/adminSupabase';
 import { formatDate } from '../lib/formatters';
 import { Card } from '../components/ui/Card';
 import { UserLink } from '../components/UserLink';
-import { ArrowLeft, AlertTriangle, User, Sparkles } from 'lucide-react';
+import { ArrowLeft, AlertTriangle, Sparkles } from 'lucide-react';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -154,7 +156,11 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             ? 'bg-blue-50 text-blue-900 dark:bg-blue-950/60 dark:text-blue-100 border border-blue-200 dark:border-blue-800'
             : 'bg-emerald-50 text-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-100 border border-emerald-200 dark:border-emerald-800'
         }`}>
-          {renderContent(message.content)}
+          {isUser ? renderContent(message.content) : (
+            <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-pre:my-2 prose-pre:bg-slate-900 prose-pre:text-slate-100 prose-code:text-[0.85em] prose-code:bg-slate-100 dark:prose-code:bg-slate-800 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-li:my-0">
+              <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>
+            </div>
+          )}
         </div>
 
         {message.images && message.images.length > 0 && (
