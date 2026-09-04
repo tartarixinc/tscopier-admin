@@ -161,3 +161,15 @@
            border-b border-slate-200 dark:border-slate-700 rounded-xl;
   }
 }
+
+/* Animated data-flow dashes for the Systems Health machine diagram */
+@keyframes flow-dash-move {
+  to { background-position-x: -14px; }
+}
+.flow-dash {
+  height: 2px;
+  background-repeat: repeat-x;
+  animation: flow-dash-move 0.9s linear infinite;
+  opacity: 0.55;
+  border-radius: 9999px;
+}

@@ -2,6 +2,86 @@
 
 ## Changelog
 
+### 2026-09-02 — Admin transcript viewer: AI assistant chat history for user support
+
+- **Context:** support team needed visibility into what users discussed with the AI assistant (the in-app copier assistant chat) to diagnose issues, verify user claims, and provide informed support. Previously there was no way to view assistant conversations from the admin dashboard.
+- **New feature — Assistant Chats list page (`/assistant-chats`):**
+  - Lists all assistant threads across all users, showing user name/email, message count, created/updated timestamps.
+  - Sorted by most recently updated first.
+  - Clickable rows navigate to the full transcript view.
+  - Uses the existing `assistant_threads` table (same one the assistant chat reads/writes).
+  - Pagination via the shared `Pagination` component, 20 threads per page.
+- **New feature — Thread transcript view (`/assistant-chats/:threadId`):**
+  - Shows the full conversation: user messages and assistant responses as distinct message bubbles.
+  - User messages styled in blue, assistant messages in emerald — clearly distinguishable at a glance.
+  - Tool call results shown as expandable collapsible sections (collapsed by default, click to expand).
+  - Attached images rendered inline at 200×150px max.
+  - Back button returns to the threads list.
+  - Empty state when no messages exist in the thread.
+- **RLS migration (`20260902120000_admin_read_assistant_threads.sql`):**
+  - Added a SELECT-only policy on `assistant_threads` for admin users (via `is_admin()`), so admin dashboard queries can read thread data. Without this policy, RLS blocks admin reads entirely.
+  - **Required before the feature works:** this migration must be applied to both staging and prod Supabase projects via the SQL editor or `supabase db query --linked`.
+- **Navigation:** added "Assistant Chats" nav group in the sidebar (`AdminShell.tsx`), with links to the list page and individual thread views.
+- **Verification:** `npx tsc -b` ✓, `npm run lint` ✓ (0 errors), `npm run build` ✓.
+- **Files changed:**
+  - New: `src/pages/AssistantThreadsPage.tsx`, `src/pages/AssistantThreadViewPage.tsx`, `supabase/migrations/20260902120000_admin_read_assistant_threads.sql`
+  - Modified: `src/App.tsx` (routes), `src/components/AdminShell.tsx` (nav)
+- **Follow-up:** apply the RLS migration to staging + prod. Verify threads appear once data exists in `assistant_threads`.
+
+### 2026-08-28 — Channel broker configs modal: section tabs + field alignment with main site
+
+- **Context:** the channel broker configs modal (opened from User Detail → Telegram Channels → click a channel) showed all setting sections stacked vertically. The user wanted tabbed navigation matching the main site's configure modal (AccountConfigPage). Additionally, the admin's section grouping had fields in the wrong tabs compared to the main site's actual tab layout.
+- **New feature — section tabs:**
+  - Added tab bar (using `ui/Tabs` component) above broker cards, gated on `hasManual` (only shown when at least one manual broker has settings).
+  - Tab list is the union of sections present across linked brokers — only tabs with data appear.
+  - Each broker card renders only the active tab's section, not all sections stacked.
+  - Tabs match the main site's canonical names and icons: Signal Examples (`MessageSquareText`), Symbols (`Coins`), Instructions (`ScrollText`), Risk (`Wallet`), Targets (`Target`), Management (`Settings2`), Filters (`Filter`).
+  - AI-mode brokers always show AI description + JSON regardless of active tab.
+- **Field alignment fixes (admin `describeManualSettings` → main site `AccountConfigPage`):**
+  - `signal_entry_pip_tolerance`, `use_signal_entry_price`, `use_signal_entry_range`: moved from Symbols → Risk.
+  - `reverse_signal`: moved from Symbols → Management.
+  - `rr_for_sl_enabled`, `rr_for_sl`, `rr_for_tps_enabled`, `rr_for_tps`: moved from Targets → Management.
+  - `partial_close_percent` → `half_close_percent` (field name now matches main site).
+- **Missing fields added:**
+  - Risk: `range_layer_till_close`, `range_layering_type`, `single_tp_target`.
+  - Management: `move_sl_to_entry_tp_index`, `move_sl_to_entry_type`.
+  - Filters: `close_before_news_minutes`, `resume_after_news_minutes`.
+- **Unlinked brokers sidebar:** went through several iterations (verbose list → compact list → dropdown), then removed entirely per user request. The empty state in the linked-brokers section still references `unlinked.length` for context ("The user has N broker accounts but none are connected").
+- **DRY improvement:** extracted `asManualSettings(raw)` helper to deduplicate the manual_settings type guard across `BrokerConfigCard` and `sectionIdsForBrokers`.
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors), `npm run build` ✓.
+- **Files changed:** `src/components/user/ChannelBrokerConfigs.tsx`.
+- **Follow-up:** none.
+
+### 2026-08-26 — User detail: channel broker configs modal + 5-per-page pagination
+
+- **Context:** admin wanted to click a user's Telegram channel and see the full broker trading configuration for that channel (copier mode, lot sizing, SL/TP, trailing, filters, etc.) — not just the channel name and status.
+- **Data layer:** the authoritative `broker_channel_trading_configs` normalized table is NOT admin-readable (RLS is owner-only, grants only `authenticated`). However, `broker_accounts.channel_trading_configs` JSONB mirror — trigger-synced from the same source — IS readable via the existing admin `broker_accounts` RLS policies. Extended the existing `broker_accounts` select in `UserDetailPage.tsx:212` by three fields: `channel_trading_configs`, `last_equity`, `account_login`. No new queries, no migrations.
+- **New files:**
+  - `src/components/ui/Modal.tsx` — reusable modal: fixed overlay, centered card, Escape/backdrop close, scroll lock, mobile-safe (bottom-sheet on small screens, centered on sm+), title/subtitle/close button.
+  - `src/components/user/ChannelBrokerConfigs.tsx` — modal body: matches channel UUID against each broker's `channel_trading_configs` map (lowercased key comparison); renders per-broker config cards with natural-language labels (no raw JSON), grouped into sections: Lot sizing, Stop loss & take profit, Trade management, Entry rules, Filters & timing. AI mode shows a description sentence + collapsed JSON expander. Manual mode shows labeled settings. Unlinked brokers shown as muted dashed chips with an explanatory sentence. Empty state when zero configs.
+- **Wired in `UserDetailPage.tsx`:**
+  - Channels table rows now clickable → open modal.
+  - 5-per-page pagination via the shared `Pagination` component (`components/DataTable.tsx`), only shown when > 5 channels exist.
+  - Hint text "Click a channel to see broker configurations" when accordion is expanded.
+  - Pagination resets to page 1 on user change.
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors), `npm run build` ✓.
+- **Follow-up:** none.
+
+### 2026-08-26 — Systems Health: failure drill-down modal + plain-English escalation verdict
+
+- **Context:** user wanted to click any failure row in Systems Health → modal with full detail; escalation text was rewritten from formula-speak to plain sentences after feedback: "Nobody understands this."
+- **Data layer (`src/lib/systemHealth.ts`):**
+  - New `ErrorBucketRow` interface (`id, userId, createdAt, action, errorMessage, brokerAccountId, signalId, requestPayload, responsePayload`); `ErrorBucketSummary` gained `rows: ErrorBucketRow[]`.
+  - `trade_execution_logs` failure query now selects `id, action, broker_account_id, signal_id, created_at, response_payload` (in addition to existing columns), so each occurrence carries its raw request/response payloads for drill-down.
+  - New `failureBaselinePerWindow` field on `SystemHealthReport` — the 7-day average total failures per window — so the modal can compute the multiple in plain language.
+- **UI (`src/pages/SystemHealthPage.tsx`):**
+  - Failure table rows clickable; bucket label/style lifted to module scope (`BUCKET_LABEL`, `BUCKET_STYLE`).
+  - `ModalShell` gained optional `wide` prop (`max-w-4xl`, used by this modal only).
+  - New `ErrorBucketModal` — full drill-down with: stat cards (occurrences, users, first/last seen); per-user breakdown grid with `UserLink`; expandable per-occurrence list showing full error message, user/signal/broker/log IDs, and raw request/response JSON via `JsonViewer`.
+  - Escalation verdict rewritten as plain English via `escalationStory()`: states what happened, compares against the week's normal failure rate (with the real baseline number visible), and gives a verdict — no formulas, no ≥/×/AND symbols. Header reads "Should someone look at this? Yes — alarm raised" or "Should someone look at this? No alarm".
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors), `npm run build` ✓.
+- **Follow-up:** none.
+
 ### 2026-08-26 - Signal/Error modal trade config + faster Errors page initial load
 
 - **Context (user request):** keep the visually approved Signal/Error detail modal, do not reintroduce Execution Attempts, and make `/errors` load faster without backend/schema/worker/trading changes, commits, pushes, or deploys.
@@ -134,7 +214,7 @@
 
 ### 2026-08-19 - Admin Errors: deterministic `entry_not_opened` root-cause diagnostics
 
-- **Context (user request):** finish the CTO-reviewed gap where `entry_not_opened` remained the largest bucket but still did not explain why trades were not entered. Scope stayed admin-only: no TScopier edits, no DB migrations, no prod connection, no deploy, no commit, no query/count/date/pagination/analytics semantics change.
+- **Context (user request):** finish the CTO-reviewed gap where `entry_not_opened` remained the largest bucket but still did not explain why trades were not entered. Scope stayed admin-only: no TSCopier edits, no DB migrations, no prod connection, no deploy, no commit, no query/count/date/pagination/analytics semantics change.
 - **Root cause found:** `/errors` built failed `signals` rows and failed/error `trade_execution_logs` rows independently. A failed signal with `skip_reason='entry_not_opened'` was not enriched from its linked execution logs by `signal_id`, so the row and modal often stopped at generic "No position opened" even when `request_payload` / `response_payload` carried structured `trade_failure`, `reason_code`, `failure_reason`, `skip_reason`, broker error evidence, or a later account-specific failure.
 - **`src/lib/errors.ts`:**
   - Added central pure root-cause diagnostics for `entry_not_opened`: structured `trade_failure` -> structured `reason_code` -> explicit `failure_reason` / `skip_reason` (except fallback `entry_not_opened`) -> normalized broker classification -> execution `error_message` -> neutral legacy fallback.
@@ -153,7 +233,7 @@
 
 ### 2026-08-14 — Error classification audit blockers fixed: safeContext privacy + parser-stage evidence narrowed
 
-- **Context (user request):** fix only the two blockers from the final read-only audit of the admin error-classification patch. No query/count/analytics changes, no modal redesign, no TScopier changes, no DB/migration/deploy/commit/prod access.
+- **Context (user request):** fix only the two blockers from the final read-only audit of the admin error-classification patch. No query/count/analytics changes, no modal redesign, no TSCopier changes, no DB/migration/deploy/commit/prod access.
 - **`src/lib/errors.ts`:**
   - `safeContext` now excludes sensitive-looking keys matching `token|secret|password|credential|session|auth|authorization|key|phone|otp|hash|cookie|bearer` case-insensitively. This covers common styles such as `phone_number`, `otpCode`, `phoneCodeHash`, `sessionString`, `accessToken`, `apiKey`, `authorizationHeader`, `set_cookie`, and `bearer_token`. Sensitive fields are excluded entirely; values are not sanitized/retained.
   - Parser-failure classification no longer treats plain `parsed_data.stage === "parse"` as proof of parse failure. Accepted parser evidence remains explicit cause keys (`parse_failed`, `signal_parse_failed`, `parser_failed`, `signal_parser_failed`) and explicit failure-stage fields (`failed_stage` / `failure_stage`) identifying parser stage.
