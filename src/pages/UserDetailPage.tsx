@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Server, MessageSquare, Zap, TrendingUp, FlaskConical, Mail, Send, ScrollText, ChevronDown, ChevronRight } from 'lucide-react';
+import { ArrowLeft, Server, MessageSquare, Zap, TrendingUp, FlaskConical, Mail, Send, ScrollText, ChevronDown, ChevronRight, Radio } from 'lucide-react';
 import { authSupabase as adminSupabase } from '../lib/adminSupabase';
 import { getAdminEnvConfig } from '../lib/environment';
 import { formatDate, formatDateOnly, formatCurrency } from '../lib/formatters';
@@ -141,6 +141,9 @@ export function UserDetailPage() {
   const [showBrokers, setShowBrokers] = useState(false);
   const [showChannels, setShowChannels] = useState(false);
   const [showReportedTrades, setShowReportedTrades] = useState(false);
+  const [showTelegramEvents, setShowTelegramEvents] = useState(false);
+  const [telegramEvents, setTelegramEvents] = useState<Array<{ id: string; event_type: string; detail: Record<string, unknown>; created_at: string }>>([]);
+  const [telegramEventsLoading, setTelegramEventsLoading] = useState(false);
   const [channelPage, setChannelPage] = useState(1);
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
   const [reportedTradesPage, setReportedTradesPage] = useState(1);
@@ -343,6 +346,33 @@ export function UserDetailPage() {
 
     return () => { cancelled = true; };
   }, [reportedTradesPage, showReportedTrades, userId]);
+
+  useEffect(() => {
+    if (!userId || !showTelegramEvents) return;
+    let cancelled = false;
+    setTelegramEventsLoading(true);
+
+    (async () => {
+      const { data } = await adminSupabase
+        .from('listener_events')
+        .select('id, event_type, detail, created_at')
+        .eq('user_id', userId)
+        .in('event_type', [
+          'telegram_link_attempt',
+          'telegram_link_success',
+          'telegram_link_failed',
+          'telegram_link_disconnect',
+          'assistant_tool_call',
+        ])
+        .order('created_at', { ascending: false })
+        .limit(100);
+      if (cancelled) return;
+      setTelegramEvents((data ?? []) as Array<{ id: string; event_type: string; detail: Record<string, unknown>; created_at: string }>);
+      setTelegramEventsLoading(false);
+    })();
+
+    return () => { cancelled = true; };
+  }, [showTelegramEvents, userId]);
 
   const hasLoadedCurrentUser = Boolean(userId) && loadedUserId === userId;
 
@@ -649,6 +679,54 @@ export function UserDetailPage() {
             onPageChange={setReportedTradesPage}
           />
           </>
+        )}
+      </Card>
+
+      {/* Telegram event logs */}
+      <Card>
+        <CardHeader>
+          <button
+            className="flex items-center justify-between w-full gap-2 group"
+            onClick={() => setShowTelegramEvents(!showTelegramEvents)}
+          >
+            <h3 className="text-sm font-semibold">Telegram Event Logs ({telegramEvents.length})</h3>
+            <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showTelegramEvents ? 'rotate-180' : ''}`} />
+          </button>
+        </CardHeader>
+        {showTelegramEvents && (
+          <div className="overflow-x-auto">
+            <table className="table-base">
+              <thead><tr><th>Event</th><th>Details</th><th>Time</th></tr></thead>
+              <tbody>
+                {telegramEventsLoading ? (
+                  Array.from({ length: 4 }).map((_, index) => (
+                    <tr key={index}>
+                      <td colSpan={3} className="px-4 py-3"><div className="skeleton h-4 w-full" /></td>
+                    </tr>
+                  ))
+                ) : telegramEvents.length === 0 ? (
+                  <tr><td colSpan={3} className="text-center py-6 text-slate-400">No Telegram events</td></tr>
+                ) : telegramEvents.map((e) => (
+                  <tr key={e.id}>
+                    <td>
+                      <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${
+                        e.event_type.includes('failed') ? 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                        : e.event_type.includes('success') ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                        : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                      }`}>
+                        <Radio className="w-3 h-3" />
+                        {e.event_type}
+                      </span>
+                    </td>
+                    <td className="text-xs text-slate-500 dark:text-slate-400 font-mono max-w-xs truncate">
+                      {Object.keys(e.detail).length > 0 ? JSON.stringify(e.detail) : '—'}
+                    </td>
+                    <td className="text-xs text-slate-400">{formatDate(e.created_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
 
