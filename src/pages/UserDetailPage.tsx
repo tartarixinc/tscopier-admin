@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Server, MessageSquare, Zap, TrendingUp, FlaskConical, Mail, Send, ScrollText, ChevronDown, ChevronRight } from 'lucide-react';
 import { authSupabase as adminSupabase } from '../lib/adminSupabase';
+import { getAdminEnvConfig } from '../lib/environment';
 import { formatDate, formatDateOnly, formatCurrency } from '../lib/formatters';
 import { Card, CardHeader, CardContent } from '../components/ui/Card';
 import { StatusBadge } from '../components/StatusBadge';
@@ -150,8 +151,7 @@ export function UserDetailPage() {
   const mountedRef = useRef(true);
   const currentUserIdRef = useRef<string | null>(userId ?? null);
 
-  const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-  const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const { url: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY } = getAdminEnvConfig();
 
   currentUserIdRef.current = userId ?? null;
 
