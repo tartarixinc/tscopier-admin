@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -135,10 +135,20 @@ export function AssistantThreadViewPage() {
 function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
   const [expandedTools, setExpandedTools] = useState<Record<number, boolean>>({});
+  const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
 
   const toggleTool = (i: number) => {
     setExpandedTools(prev => ({ ...prev, [i]: !prev[i] }));
   };
+
+  const closeLightbox = useCallback(() => setLightboxIdx(null), []);
+
+  useEffect(() => {
+    if (lightboxIdx === null) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeLightbox(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [lightboxIdx, closeLightbox]);
 
   return (
     <div className={`flex gap-3 px-4 py-4 ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -170,9 +180,33 @@ function MessageBubble({ message }: { message: ChatMessage }) {
                 key={i}
                 src={img}
                 alt={`Image ${i + 1}`}
-                className="max-w-[200px] max-h-[150px] rounded-lg border border-slate-200 dark:border-slate-700 object-cover"
+                className="max-w-[200px] max-h-[150px] rounded-lg border border-slate-200 dark:border-slate-700 object-cover cursor-pointer hover:opacity-80 transition-opacity"
+                onClick={() => setLightboxIdx(i)}
+                onError={(e) => {
+                  (e.target as HTMLImageElement).style.display = 'none';
+                }}
               />
             ))}
+          </div>
+        )}
+
+        {lightboxIdx !== null && message.images && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm"
+            onClick={() => setLightboxIdx(null)}
+          >
+            <button
+              onClick={() => setLightboxIdx(null)}
+              className="absolute top-4 right-4 p-2 rounded-full text-white/80 hover:text-white hover:bg-white/10 transition-colors"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+            </button>
+            <img
+              src={message.images[lightboxIdx]}
+              alt={`Image ${lightboxIdx + 1}`}
+              className="max-w-[90vw] max-h-[85vh] rounded-lg object-contain shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            />
           </div>
         )}
 
