@@ -4,6 +4,7 @@ import {
   recipientFirstName,
   type EmailRecipient,
 } from "./campaignEmailLayout.ts";
+import { publicUnsubscribeUrl } from "./publicFunctionOrigin.ts";
 
 export type { EmailRecipient };
 
@@ -28,14 +29,13 @@ export function isSubscriptionCampaignType(
 }
 
 export function getEmailUnsubscribeUrl(
-  supabaseUrl: string,
+  _supabaseUrl: string,
   serviceRoleKey: string,
   userId: string,
 ): string {
   const hmac = createHmac("sha256", serviceRoleKey);
   hmac.update(userId);
-  const token = hmac.digest("hex");
-  return `${supabaseUrl}/functions/v1/email-unsubscribe?uid=${userId}&token=${token}`;
+  return publicUnsubscribeUrl(userId, hmac.digest("hex"));
 }
 
 function buildNoSubscriptionHtml(

@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Server, MessageSquare, Zap, TrendingUp,
   FlaskConical, LogOut,
   Search, UserCircle, Activity, DollarSign, Cog, Menu, X, AlertTriangle,
-  Copy, Cpu, ShieldAlert, FileWarning, MessagesSquare
+  Copy, Cpu, ShieldAlert, FileWarning, MessagesSquare, Mail
 } from 'lucide-react';
 import { ThemeToggle } from './ui/ThemeToggle';
 import { authSupabase } from '../lib/adminSupabase';
@@ -106,6 +106,7 @@ const navigation: NavGroup[] = [
     title: 'System',
     items: [
       { label: 'Trading Presets', to: '/presets', icon: Cog },
+      { label: 'Emails', to: '/emails', icon: Mail },
       { label: 'App Settings', to: '/settings', icon: Cog },
     ],
   },
@@ -492,6 +493,14 @@ export function AdminShell({ children }: AdminShellProps) {
             )}
           </form>
           {envToggle}
+          <button
+            type="button"
+            onClick={() => navigate('/emails')}
+            className="btn btn-primary btn-sm ml-auto shrink-0"
+          >
+            <Mail className="w-3.5 h-3.5" />
+            Send Email
+          </button>
         </header>
 
         {/* Page content */}

@@ -7,6 +7,7 @@ import {
   type EmailRecipient,
 } from "../_shared/campaignEmailLayout.ts";
 import { resolveEmailLogoUrl } from "../_shared/brandEmailAssets.ts";
+import { publicUnsubscribeUrl } from "../_shared/publicFunctionOrigin.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -34,7 +35,7 @@ function getUnsubscribeUrl(userId: string): string {
   const hmac = createHmac("sha256", SUPABASE_SERVICE_ROLE_KEY);
   hmac.update(userId);
   const token = hmac.digest("hex");
-  return `${SUPABASE_URL}/functions/v1/email-unsubscribe?uid=${userId}&token=${token}`;
+  return publicUnsubscribeUrl(userId, token);
 }
 
 interface StripeInvoice {

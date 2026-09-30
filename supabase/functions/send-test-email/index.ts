@@ -7,10 +7,9 @@ const corsHeaders = {
 };
 
 const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY")!;
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const APP_URL = Deno.env.get("VITE_APP_URL") || "https://app.tscopier.com";
 
-const unsubscribeUrl = `${SUPABASE_URL}/functions/v1/email-unsubscribe?uid=test&token=test`;
+const unsubscribeUrl = "https://sso.tscopier.ai/functions/v1/email-unsubscribe?uid=test&token=test";
 
 const noSubscriptionHtml = `<!DOCTYPE html>
 <html>

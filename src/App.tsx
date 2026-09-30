@@ -33,6 +33,7 @@ import { ErrorsAnalyticsPage } from './pages/ErrorsAnalyticsPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { AssistantThreadsPage } from './pages/AssistantThreadsPage';
 import { AssistantThreadViewPage } from './pages/AssistantThreadViewPage';
+import { EmailsPage } from './pages/EmailsPage';
 
 function ProtectedLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -72,6 +73,7 @@ export default function App() {
         <Route path="/affiliates" element={<ProtectedLayout><AffiliatesPage /></ProtectedLayout>} />
         <Route path="/presets" element={<ProtectedLayout><PresetsPage /></ProtectedLayout>} />
         <Route path="/settings" element={<ProtectedLayout><AppSettingsPage /></ProtectedLayout>} />
+        <Route path="/emails" element={<ProtectedLayout><EmailsPage /></ProtectedLayout>} />
         <Route path="/copier-logs" element={<ProtectedLayout><CopierLogsPage /></ProtectedLayout>} />
         <Route path="/errors" element={<ProtectedLayout><ErrorsPage /></ProtectedLayout>} />
         <Route path="/errors/analytics" element={<ProtectedLayout><ErrorsAnalyticsPage /></ProtectedLayout>} />

@@ -2,6 +2,22 @@
 
 ## Changelog
 
+### 2026-09-30 — Unsubscribe page rendered as raw HTML
+
+- **Cause:** the unsubscribe link redirected to `email-assets/unsubscribe.html` in Storage. Supabase serves that file as `text/plain`, so the browser showed the HTML source.
+- **Fix:** `email-unsubscribe` now returns the page itself with `Content-Type: text/html`. Deployed to production.
+
+### 2026-09-30 — Segment email broadcasts
+
+- **Context:** admins needed to send newsletters and announcements to a chosen group of users, not only the existing one-off subscription emails.
+- **What changed:** new Emails page at `/emails` (System nav). Pick one audience, write a subject, heading, and message, optionally add a button, preview the branded email, send a test to any address you type in, then confirm the send.
+- **Audiences:** All users, Advanced, Basic, Cancelled, Past Due, Copier Paused, Copier Engine Offline, and No active subscription. Unsubscribed users and accounts without an email are skipped.
+- **Send pacing:** broadcasts go out in batches of 8, with a pause between batches and retries when Resend says "too many requests". After a partial send, use **Send to failed recipients** or **Send to people who did not get this** on a recent send. That resends only to people who do not already have a successful row for that batch. Keep the same message in the composer.
+- **Deployed:** function version is live on production project `sxkpcovbyaficvtkpsdo`. Uses existing `RESEND_API_KEY` and `RESEND_CAMPAIGN_FROM`.
+- **Files changed:**
+  - New: `supabase/functions/send-broadcast-email/index.ts`, `src/pages/EmailsPage.tsx`
+  - Modified: `src/App.tsx`, `src/components/AdminShell.tsx`
+
 ### 2026-09-02 — Admin transcript viewer: AI assistant chat history for user support
 
 - **Context:** support team needed visibility into what users discussed with the AI assistant (the in-app copier assistant chat) to diagnose issues, verify user claims, and provide informed support. Previously there was no way to view assistant conversations from the admin dashboard.
