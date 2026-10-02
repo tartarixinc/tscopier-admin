@@ -2,6 +2,20 @@
 
 ## Changelog
 
+### 2026-10-02 — Broker Accounts page: provider + MTAPI status columns with a provider filter
+
+- **Context:** the MTAPI migration needs a live monitor: which broker accounts use the new MTAPI connection system and whether each one is connected. That data lives in `broker_accounts.provider` and `broker_accounts.mtapi_status`, which the admin dashboard did not show anywhere.
+- **Plain English:** the Broker Accounts page now has two extra columns — **Provider** (which connection system the account uses) and **MTAPI** (its live connection state, e.g. Connected) — and a **Providers** dropdown to show only MTAPI accounts or only legacy ones. Production does not have these columns yet, so the page checks: if the environment does not support them, it silently removes the two columns and the filter and shows the list exactly as before. Nothing breaks on production, and the known failure mode (a query error swallowed into an empty page) is avoided by retrying without the columns instead of giving up.
+- **Technical detail:**
+  - `src/pages/BrokerAccountsPage.tsx`: `provider?`/`mtapi_status?` added as optional fields on `BrokerRow` (production rows genuinely lack them). A `supportsProviderCols` flag starts `true`; the `select` clause is **two complete literal strings** (with/without the columns) — supabase-js v2's typed select parser rejects unions and interpolated template strings (`ParserError`/`GenericStringError`), so the clause is cast `as string` and the row type is forced back with `.returns<BrokerRow[]>()` applied **at the `.then()` call site** (calling `.returns()` earlier narrows the builder to `PostgrestTransformBuilder`, which has no `.eq`/`.is` filters). On query error with code `42703`/`PGRST204` or a message matching `/column|provider/`, the flag flips to `false` and the provider filter resets, so the effect re-runs without the columns (this is the guard the 2026-08-18 note at PROJECT_MEMORY:45 called for). Other errors keep the previous behaviour (loading stops, no flag change — a transient network error does not permanently disable the columns). The MTAPI column renders a status badge only when `provider === 'mtapi'`, otherwise an em dash; the filter offers `mtapi` (`eq`) and `Legacy (no provider)` (`is provider null`, sentinel value `__none__`). Both the columns and the filter are rendered only while `supportsProviderCols` is true.
+  - Verified against the databases: staging (`axdcledcyhyvzrnfkwat`) has both columns — 7 rows, all `provider='mtapi'`, `mtapi_status` 1 `connected` / 6 `null`; production (`sxkpcovbyaficvtkpsdo`) has **neither** column — the guard is mandatory, not hypothetical.
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors, 2 pre-existing warnings), `npm run build` ✓. This repo has no test suite. Subagent review skipped deliberately: the machine had ~1.6 GB free (OOM risk from earlier sessions); self-review performed on the full diff — no critical/high findings; noted cosmetic trade-off: on production the two columns flash briefly before the probe fails and hides them.
+- **Deploy state:** branch `feat/user-detail-enhancements` pushed to `origin` (`tartarixinc/tscopier-admin`) so a PR to `main` can be opened; Netlify deploys from `main` after merge.
+- **Follow-ups:**
+  1. Open the PR (`feat/user-detail-enhancements` → `main`) — it carries the two MIGRATION-switch/lightbox/telegram-logs commits from prior sessions plus this feature.
+  2. When MTAPI reaches production, the main TSCopier repo must migrate `broker_accounts` (add `provider`, `mtapi_status`) — until then the guard keeps this page working against prod.
+  3. Pre-existing: migration `20260921120000_admin_read_listener_events.sql` still needs applying to staging + prod for the Telegram event logs panel.
+
 ### 2026-09-28 — Assistant chat: click-to-expand image lightbox
 
 - **Context:** the transcript view (`/assistant-chats/:threadId`) rendered message images as small 200×150 thumbnails with no way to see them full size. Support could not read text or inspect screenshots attached to assistant conversations.

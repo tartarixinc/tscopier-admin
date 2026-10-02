@@ -18,6 +18,8 @@ interface BrokerRow {
   display_name: string | null;
   label: string;
   platform: string;
+  provider?: string | null;
+  mtapi_status?: string | null;
   broker_name: string | null;
   broker_server: string | null;
   account_login: string | null;
@@ -44,13 +46,18 @@ export function BrokerAccountsPage() {
   const [status, setStatus] = useState('');
   const [activeOnly, setActiveOnly] = useState('');
   const [search, setSearch] = useState('');
+  const [provider, setProvider] = useState('');
+  // Production broker_accounts has no provider/mtapi_status columns yet; the
+  // first query probes for them and this flag drops them (and the filter) when
+  // the environment does not have them, instead of failing the whole listing.
+  const [supportsProviderCols, setSupportsProviderCols] = useState(true);
   const [data, setData] = useState<BrokerRow[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  useEffect(() => { setPage(1); }, [platform, status, activeOnly, search]);
+  useEffect(() => { setPage(1); }, [platform, status, activeOnly, search, provider]);
 
   useEffect(() => {
     let cancelled = false;
@@ -59,12 +66,12 @@ export function BrokerAccountsPage() {
     const from = (page - 1) * PAGE_SIZE;
     const to = from + PAGE_SIZE - 1;
 
+    const selectClause = supportsProviderCols
+      ? 'id, user_id, label, platform, broker_name, broker_server, account_login, connection_status, is_active, copier_mode, last_balance, last_equity, last_synced_at, fxsocket_account_id, fxsocket_status, terminal_connected, trade_allowed, connection_error, ai_settings, manual_settings, channel_trading_configs, provider, mtapi_status'
+      : 'id, user_id, label, platform, broker_name, broker_server, account_login, connection_status, is_active, copier_mode, last_balance, last_equity, last_synced_at, fxsocket_account_id, fxsocket_status, terminal_connected, trade_allowed, connection_error, ai_settings, manual_settings, channel_trading_configs';
     let q = adminSupabase
       .from('broker_accounts')
-      .select(
-        'id, user_id, label, platform, broker_name, broker_server, account_login, connection_status, is_active, copier_mode, last_balance, last_equity, last_synced_at, fxsocket_account_id, fxsocket_status, terminal_connected, trade_allowed, connection_error, ai_settings, manual_settings, channel_trading_configs',
-        { count: 'exact' }
-      )
+      .select(selectClause as string, { count: 'exact' })
       .order('last_synced_at', { ascending: false, nullsFirst: false })
       .range(from, to);
 
@@ -73,28 +80,53 @@ export function BrokerAccountsPage() {
     if (activeOnly === 'true') q = q.eq('is_active', true);
     if (activeOnly === 'false') q = q.eq('is_active', false);
     if (search) q = q.ilike('label', `%${search}%`);
+    if (supportsProviderCols && provider) {
+      q = provider === '__none__' ? q.is('provider', null) : q.eq('provider', provider);
+    }
 
-    q.then(async ({ data: rows, count, error }) => {
+    q.returns<BrokerRow[]>().then(async ({ data: rows, count, error }) => {
       if (cancelled) return;
-      if (!error) {
-        const userIds = [...new Set((rows ?? []).map((r) => r.user_id).filter(Boolean))];
-        const displayNames = await fetchDisplayNames(userIds);
-        setData((rows ?? []).map((r) => ({ ...r, display_name: displayNames[r.user_id] ?? null })));
-        setTotal(count ?? 0);
+      if (error) {
+        const missingColumns =
+          error.code === '42703' || error.code === 'PGRST204'
+          || /column|provider/.test(error.message ?? '');
+        if (supportsProviderCols && missingColumns) {
+          setSupportsProviderCols(false);
+          setProvider('');
+          return;
+        }
+        setLoading(false);
+        return;
       }
+      const userIds = [...new Set((rows ?? []).map((r) => r.user_id).filter(Boolean))];
+      const displayNames = await fetchDisplayNames(userIds);
+      setData((rows ?? []).map((r) => ({ ...r, display_name: displayNames[r.user_id] ?? null })));
+      setTotal(count ?? 0);
       setLoading(false);
     });
 
     return () => { cancelled = true; };
-  }, [page, platform, status, activeOnly, search]);
+  }, [page, platform, status, activeOnly, search, provider, supportsProviderCols]);
 
   const columns: Column<BrokerRow>[] = [
     { key: 'display_name', label: 'User', render: r => <UserLink userId={r.user_id} displayName={r.display_name} /> },
     { key: 'label', label: 'Label', render: r => <span className="font-medium">{r.label}</span> },
     { key: 'platform', label: 'Platform', render: r => <span className="badge bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300">{r.platform}</span> },
+    ...(supportsProviderCols ? [{
+      key: 'provider',
+      label: 'Provider',
+      render: (r: BrokerRow) => <span className="text-xs text-slate-500">{r.provider ?? '—'}</span>,
+    }] : []),
     { key: 'broker_name', label: 'Broker', render: r => <span className="text-xs text-slate-500">{r.broker_name ?? '—'}</span> },
     { key: 'account_login', label: 'Login', render: r => <span className="font-mono text-xs text-slate-500">{r.account_login ?? '—'}</span> },
     { key: 'connection_status', label: 'Connection', render: r => <StatusBadge status={r.connection_status} dot /> },
+    ...(supportsProviderCols ? [{
+      key: 'mtapi_status',
+      label: 'MTAPI',
+      render: (r: BrokerRow) => r.provider === 'mtapi'
+        ? <StatusBadge status={r.mtapi_status} dot />
+        : <span className="text-xs text-slate-400">—</span>,
+    }] : []),
     { key: 'fxsocket_status', label: 'FXSocket', render: r => <StatusBadge status={r.fxsocket_status} /> },
     { key: 'terminal_connected', label: 'Terminal', render: r => <StatusBadge status={r.terminal_connected} /> },
     { key: 'trade_allowed', label: 'Trade', render: r => <StatusBadge status={r.trade_allowed} /> },
@@ -120,6 +152,15 @@ export function BrokerAccountsPage() {
         <Select options={[{ value: 'MT4', label: 'MT4' }, { value: 'MT5', label: 'MT5' }]} value={platform} onChange={e => setPlatform(e.target.value)} placeholder="All Platforms" className="w-36" />
         <Select options={[{ value: 'connected', label: 'Connected' }, { value: 'error', label: 'Error' }, { value: 'pending', label: 'Pending' }]} value={status} onChange={e => setStatus(e.target.value)} placeholder="All Statuses" className="w-36" />
         <Select options={[{ value: 'true', label: 'Active' }, { value: 'false', label: 'Inactive' }]} value={activeOnly} onChange={e => setActiveOnly(e.target.value)} placeholder="Active/Inactive" className="w-36" />
+        {supportsProviderCols && (
+          <Select
+            options={[{ value: 'mtapi', label: 'MTAPI' }, { value: '__none__', label: 'Legacy (no provider)' }]}
+            value={provider}
+            onChange={e => setProvider(e.target.value)}
+            placeholder="All Providers"
+            className="w-44"
+          />
+        )}
       </div>
 
       <Card>
