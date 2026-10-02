@@ -2,6 +2,48 @@
 
 ## Changelog
 
+### 2026-09-28 — Assistant chat: click-to-expand image lightbox
+
+- **Context:** the transcript view (`/assistant-chats/:threadId`) rendered message images as small 200×150 thumbnails with no way to see them full size. Support could not read text or inspect screenshots attached to assistant conversations.
+- **Plain English:** clicking an image in a chat transcript now opens it fullscreen on a dark overlay. Close it with the X button, by clicking outside the image, or by pressing Escape. Broken image URLs now hide silently instead of showing a broken-image icon.
+- **Technical detail:**
+  - `src/pages/AssistantThreadViewPage.tsx`: added `lightboxIdx` state to `MessageBubble`; thumbnails get `cursor-pointer` + hover opacity and an `onClick` that opens the overlay; overlay is a `fixed inset-0 z-50` layer with `stopPropagation` on the image so only backdrop/X clicks close it; Escape handled through a `keydown` listener that is registered only while the lightbox is open; `onError` on thumbnails hides failed loads.
+- **Images in this feature:** base64 data URLs stored inline in the `messages` JSONB column of `assistant_threads` (written by the main TSCopier product). Not Supabase Storage — no bucket is involved, and there is no upload path in this admin repo.
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors, 2 pre-existing warnings), `npm run build` ✓.
+- **Files changed:** `src/pages/AssistantThreadViewPage.tsx`.
+
+### 2026-09-28 — User detail: Telegram event logs panel + listener_events admin read
+
+- **Context:** support needed to see Telegram link attempts/failures and assistant tool calls per user without querying the database directly. The `listener_events` table only allowed users to read their own rows, so the admin dashboard got empty results.
+- **Plain English:** the user detail page has a new collapsible "Telegram Event Logs" section. It shows the last 100 link attempt/success/failure/disconnect events and assistant tool calls for that user, colour-coded by outcome.
+- **Technical detail:**
+  - `supabase/migrations/20260921120000_admin_read_listener_events.sql`: SELECT policy on `listener_events` for admins. **Corrected before commit:** the original draft used an `EXISTS (SELECT 1 FROM user_profiles ...)` subquery — the exact pattern migration `20260529211209` removed everywhere, because `user_profiles` has RLS so the subquery recurses and the policy always fails. Now uses the `public.is_admin()` SECURITY DEFINER helper, matching `20260902120000_admin_read_assistant_threads.sql`.
+  - `src/pages/UserDetailPage.tsx`: new collapsible card below the existing sections; lazy-loads on expand; filters `event_type` to the five Telegram/assistant types defined in the main product's `supabase/functions/_shared/listenerEvents.ts`; caps at 100 rows, newest first.
+- **Required before the feature works:** this migration must be applied to staging and prod Supabase (`supabase db query --linked`) — without it RLS returns zero rows and the panel shows the empty state.
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓, `npm run build` ✓.
+- **Files changed:** `src/pages/UserDetailPage.tsx`, `supabase/migrations/20260921120000_admin_read_listener_events.sql` (new).
+- **Follow-up:** apply the migration to staging + prod.
+
+### 2026-09-28 — Docs: AGENTS.md session-history lookup section
+
+- Added a "Past conversation history" section to `AGENTS.md` describing the read-only `session_lookup.py` tool (`~/.local/share/opencode/opencode.db`) so agents search prior sessions before asking users to re-paste information. Tool is read-only; no secrets stored in it or in this file.
+
+### 2026-09-19 — Third environment switch: MIGRATION
+
+- **Context:** the admin dashboard could already switch between PROD and STAGING at runtime. We needed a third target for the migration environment (the Supabase "Migration" branch and `migration` git branch) so the same dashboard can be pointed at staging and migration side by side for A/B comparison.
+- **Plain English:** The admin dashboard now has a three-way switch: PROD, STAGING, MIGRATION. Selecting MIGRATION reads the migration database, shows a violet banner at the top so nobody mistakes it for production, and the login screen labels the environment clearly. The migration database is a separate Supabase branch with its own login key, so that key is configured in `.env` locally and must also be set on Netlify before the switch appears in the deployed app. Note the migration branch only contains two accounts, so admins must use one of those (or add their account) to sign in there.
+- **Technical detail:**
+  - `src/lib/environment.ts`: `AdminEnv` extended to `'prod' | 'staging' | 'migration'`; added `migration` to `ENVIRONMENTS` with URL from `VITE_SUPABASE_URL_MIGRATION` (fallback `https://supmsgcubipmmowrzoub.supabase.co`) and anon key from `VITE_SUPABASE_ANON_KEY_MIGRATION` (no fallback — a Supabase branch has its own JWT secret and rejects the production anon key). Added `ADMIN_ENVS`, `availableEnvs()`, and `getAdminEnvConfig()`; `getAdminEnv()` now accepts any stored, configured environment instead of only `staging`, and falls back to the first configured environment.
+  - `src/components/AdminShell.tsx`: the env toggle is now built from `availableEnvs()` (shown when more than one is configured) and includes MIGRATION; the top banner renders for any non-prod environment (amber for staging, violet for migration) and names the active project ref.
+  - `src/pages/LoginPage.tsx`: environment badge and dot colours extracted to `ENV_BADGE_CLASS` / `ENV_DOT_CLASS`, with a violet variant for migration.
+  - `src/pages/UserDetailPage.tsx`: fixed a pre-existing cross-environment bug that the new switch exposed. The "send subscription email" and "send invoice due email" actions hardcoded the production URL and anon key, so triggering them while viewing staging or migration would have sent real production emails. They now read the active environment through `getAdminEnvConfig()`.
+  - `.env` (gitignored): added `VITE_SUPABASE_URL_MIGRATION` and `VITE_SUPABASE_ANON_KEY_MIGRATION` (branch anon key fetched from the Supabase Management API).
+- **Correction to prior documentation:** the 2026-08-18 note in the TSCopier `PROJECT_MEMORY.md` said Supabase branches share the parent project's JWT secret. That is no longer true for this branch: the production anon key returns `401 Invalid API key` on `supmsgcubipmmowrzoub`. The branch has its own anon key.
+- **Migration branch data:** only 2 rows in `auth.users` / `user_profiles` (`martins.osodi@gmail.com`, `zejaymes@gmail.com`, both admin). Other accounts do not exist there, so signing in with a normal production account fails with "Invalid login credentials".
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors, 2 pre-existing warnings), `npm run build` ✓. Branch anon key confirmed live: `GET /auth/v1/settings` → 200.
+- **Files changed:** `src/lib/environment.ts`, `src/components/AdminShell.tsx`, `src/pages/LoginPage.tsx`, `src/pages/UserDetailPage.tsx`, `.env` (gitignored).
+- **Follow-ups:** set `VITE_SUPABASE_URL_MIGRATION` and `VITE_SUPABASE_ANON_KEY_MIGRATION` on Netlify so the switch appears in the deployed admin; add an admin account to the migration branch if you need to sign in with your own email. Note the migration branch schema includes the `broker_accounts.provider` column that prod/staging do not, so provider-specific pages must stay env-aware.
+
 ### 2026-09-02 — Admin transcript viewer: AI assistant chat history for user support
 
 - **Context:** support team needed visibility into what users discussed with the AI assistant (the in-app copier assistant chat) to diagnose issues, verify user claims, and provide informed support. Previously there was no way to view assistant conversations from the admin dashboard.
@@ -20,13 +62,13 @@
   - Empty state when no messages exist in the thread.
 - **RLS migration (`20260902120000_admin_read_assistant_threads.sql`):**
   - Added a SELECT-only policy on `assistant_threads` for admin users (via `is_admin()`), so admin dashboard queries can read thread data. Without this policy, RLS blocks admin reads entirely.
-  - **Required before the feature works:** this migration must be applied to both staging and prod Supabase projects via the SQL editor or `supabase db query --linked`.
+  - **Applied to both staging and prod** via `supabase db query --linked` on 2026-09-02.
 - **Navigation:** added "Assistant Chats" nav group in the sidebar (`AdminShell.tsx`), with links to the list page and individual thread views.
 - **Verification:** `npx tsc -b` ✓, `npm run lint` ✓ (0 errors), `npm run build` ✓.
 - **Files changed:**
   - New: `src/pages/AssistantThreadsPage.tsx`, `src/pages/AssistantThreadViewPage.tsx`, `supabase/migrations/20260902120000_admin_read_assistant_threads.sql`
   - Modified: `src/App.tsx` (routes), `src/components/AdminShell.tsx` (nav)
-- **Follow-up:** apply the RLS migration to staging + prod. Verify threads appear once data exists in `assistant_threads`.
+- **Follow-up:** none — migration applied, feature ready.
 
 ### 2026-08-28 — Channel broker configs modal: section tabs + field alignment with main site
 

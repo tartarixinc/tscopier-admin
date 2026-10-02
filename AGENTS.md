@@ -172,3 +172,34 @@ There is **no test suite** in this repo (no vitest / node:test / jest). Verifica
 - **NO BABBLING, NO JARGON** — when the user says they don't understand, stop and explain in plain English, in as few words as possible.
 - **DETAILED PLAIN ENGLISH** — explanations must be complete and thorough, in plain English. No jargon. If a technical term is needed, explain what it means right after using it. Explain the full picture: what happened, why it happened, step by step, in order.
 - Always respond in the structured format: The What / The Why / The How / The Where / The When / The Old / The New / What made the previous implementation not work and why is this new one guaranteed to work / Have I scanned the entire codebase / Do I properly understand the flow / Have I read the rules / Files involved / What changed / The Next Step / Are there multiple systems depending on this change that would break / Did I delete any code / Files needed to proceed / What is expected to happen now / Break down in depth what exactly the problem is / How secure is this / Did I prioritise security / Is it hackable / Do I have all files required / Are there any thirdparties required / Was the mobile view also taken into consideration / Have I been honest, or was I just hallucinating?
+
+---
+
+## Past conversation history
+
+Previous sessions in this project — your messages, agent replies, reasoning, and tool
+output — are stored in `~/.local/share/opencode/opencode.db`.
+
+Search them with the read-only tool:
+
+```bash
+# what exists
+python3 /home/jbzetsu/UBA-CBDB-gitlab/TOOLS/session-history/session_lookup.py list
+
+# search everything you have said across all sessions
+python3 /home/jbzetsu/UBA-CBDB-gitlab/TOOLS/session-history/session_lookup.py find "search term" --all
+
+# only your messages, or only the agent's
+python3 /home/jbzetsu/UBA-CBDB-gitlab/TOOLS/session-history/session_lookup.py find "search term" --role user
+
+# print the full conversation, or part of it
+python3 /home/jbzetsu/UBA-CBDB-gitlab/TOOLS/session-history/session_lookup.py --session <id> user
+python3 /home/jbzetsu/UBA-CBDB-gitlab/TOOLS/session-history/session_lookup.py --session <id> msg 55 -t 76
+```
+
+Full usage: `/home/jbzetsu/UBA-CBDB-gitlab/TOOLS/session-history/README.md`.
+The tool opens the database read-only and never writes to it.
+
+Use it before asking the user to re-paste results they already sent in an earlier
+session. Once useful evidence is found, copy it into this project's own notes or
+scratchpad — the database is history, not a working record.
