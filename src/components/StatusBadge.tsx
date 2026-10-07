@@ -6,6 +6,7 @@ type Variant = 'default' | 'success' | 'warning' | 'error' | 'info' | 'primary' 
 const STATUS_MAP: Record<string, Variant> = {
   // connection_status
   connected: 'success',
+  connecting: 'info',
   error: 'error',
   pending: 'warning',
   pending_open: 'warning',

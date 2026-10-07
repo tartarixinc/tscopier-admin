@@ -7,6 +7,7 @@ import { UsersPage } from './pages/UsersPage';
 import { UserDetailPage } from './pages/UserDetailPage';
 import { BrokerAccountsPage } from './pages/BrokerAccountsPage';
 import { BrokerErrorsPage } from './pages/BrokerErrorsPage';
+import { MtapiReconnectsPage } from './pages/MtapiReconnectsPage';
 import { TelegramSessionsPage } from './pages/TelegramSessionsPage';
 import { TelegramChannelsPage } from './pages/TelegramChannelsPage';
 import { ChannelSignalProfilesPage } from './pages/ChannelSignalProfilesPage';
@@ -52,6 +53,7 @@ export default function App() {
         <Route path="/users/:userId" element={<ProtectedLayout><UserDetailPage /></ProtectedLayout>} />
         <Route path="/brokers" element={<ProtectedLayout><BrokerAccountsPage /></ProtectedLayout>} />
         <Route path="/brokers/errors" element={<ProtectedLayout><BrokerErrorsPage /></ProtectedLayout>} />
+        <Route path="/brokers/mtapi-reconnects" element={<ProtectedLayout><MtapiReconnectsPage /></ProtectedLayout>} />
         <Route path="/telegram/sessions" element={<ProtectedLayout><TelegramSessionsPage /></ProtectedLayout>} />
         <Route path="/telegram/channels" element={<ProtectedLayout><TelegramChannelsPage /></ProtectedLayout>} />
         <Route path="/telegram/profiles" element={<ProtectedLayout><ChannelSignalProfilesPage /></ProtectedLayout>} />

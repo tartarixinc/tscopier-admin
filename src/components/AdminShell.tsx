@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Server, MessageSquare, Zap, TrendingUp,
   FlaskConical, LogOut,
   Search, UserCircle, Activity, DollarSign, Cog, Menu, X, AlertTriangle,
-  Copy, Cpu, ShieldAlert, FileWarning, MessagesSquare
+  Copy, Cpu, ShieldAlert, FileWarning, MessagesSquare, RefreshCw
 } from 'lucide-react';
 import { ThemeToggle } from './ui/ThemeToggle';
 import { authSupabase } from '../lib/adminSupabase';
@@ -49,6 +49,7 @@ const navigation: NavGroup[] = [
     title: 'Brokers',
     items: [
       { label: 'All Accounts', to: '/brokers', icon: Server },
+      { label: 'MTAPI Reconnects', to: '/brokers/mtapi-reconnects', icon: RefreshCw },
       { label: 'Connection Errors', to: '/brokers/errors', icon: AlertTriangle },
     ],
   },
