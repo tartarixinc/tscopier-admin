@@ -6,6 +6,7 @@ import {
   recipientFirstName,
 } from "../_shared/campaignEmailLayout.ts";
 import { resolveEmailLogoUrl } from "../_shared/brandEmailAssets.ts";
+import { publicUnsubscribeUrl } from "../_shared/publicFunctionOrigin.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -38,7 +39,7 @@ function generateUnsubscribeToken(userId: string): string {
 
 function getUnsubscribeUrl(userId: string): string {
   const token = generateUnsubscribeToken(userId);
-  return `${SUPABASE_URL}/functions/v1/email-unsubscribe?uid=${userId}&token=${token}`;
+  return publicUnsubscribeUrl(userId, token);
 }
 
 interface EmailRecipient {
