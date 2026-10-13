@@ -22,6 +22,7 @@ import { BacktestRunsPage } from './pages/BacktestRunsPage';
 import { BacktestRunDetailPage } from './pages/BacktestRunDetailPage';
 import { ListenerEventsPage } from './pages/ListenerEventsPage';
 import { SystemHealthPage } from './pages/SystemHealthPage';
+import { AlertsPage } from './pages/AlertsPage';
 import { WorkerLeasesPage } from './pages/WorkerLeasesPage';
 import { DeadLettersPage } from './pages/DeadLettersPage';
 import { AffiliatesPage } from './pages/AffiliatesPage';
@@ -69,6 +70,7 @@ export default function App() {
         <Route path="/backtests/:runId" element={<ProtectedLayout><BacktestRunDetailPage /></ProtectedLayout>} />
         <Route path="/monitoring/listener-events" element={<ProtectedLayout><ListenerEventsPage /></ProtectedLayout>} />
         <Route path="/monitoring/systems-health" element={<ProtectedLayout><SystemHealthPage /></ProtectedLayout>} />
+        <Route path="/monitoring/alerts" element={<ProtectedLayout><AlertsPage /></ProtectedLayout>} />
         <Route path="/monitoring/workers" element={<ProtectedLayout><WorkerLeasesPage /></ProtectedLayout>} />
         <Route path="/monitoring/copier-engine" element={<ProtectedLayout><CopierEnginePage /></ProtectedLayout>} />
         <Route path="/monitoring/dead-letters" element={<ProtectedLayout><DeadLettersPage /></ProtectedLayout>} />

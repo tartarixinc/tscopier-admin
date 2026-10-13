@@ -17,6 +17,8 @@ interface ErrorRow {
   broker_name: string | null;
   account_login: string | null;
   connection_error: string | null;
+  connection_error_kind: string | null;
+  mtapi_status: string | null;
   fxsocket_status: string | null;
   terminal_connected: boolean | null;
   last_synced_at: string | null;
@@ -41,7 +43,7 @@ export function BrokerErrorsPage() {
     adminSupabase
       .from('broker_accounts')
       .select(
-        'id, user_id, label, platform, broker_name, account_login, connection_error, fxsocket_status, terminal_connected, last_synced_at',
+        'id, user_id, label, platform, broker_name, account_login, connection_error, connection_error_kind, mtapi_status, fxsocket_status, terminal_connected, last_synced_at',
         { count: 'exact' }
       )
       .eq('connection_status', 'error')
@@ -68,6 +70,8 @@ export function BrokerErrorsPage() {
     { key: 'broker_name', label: 'Broker', render: r => <span className="text-xs text-slate-500">{r.broker_name ?? '—'}</span> },
     { key: 'connection_error', label: 'Error', render: r => <span className="text-xs text-error-600 dark:text-error-400 font-medium max-w-xs block truncate">{r.connection_error ?? '—'}</span> },
     { key: 'fxsocket_status', label: 'FXSocket', render: r => <StatusBadge status={r.fxsocket_status} /> },
+    { key: 'mtapi_status', label: 'MTAPI', render: r => <StatusBadge status={r.mtapi_status} /> },
+    { key: 'connection_error_kind', label: 'Kind', render: r => <span className="text-xs text-slate-500">{r.connection_error_kind ?? '—'}</span> },
     { key: 'terminal_connected', label: 'Terminal', render: r => <StatusBadge status={r.terminal_connected} /> },
     { key: 'last_synced_at', label: 'Last Sync', render: r => <span className="text-xs text-slate-400">{formatDate(r.last_synced_at)}</span> },
   ];
