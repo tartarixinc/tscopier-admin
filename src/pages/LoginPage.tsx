@@ -8,6 +8,18 @@ import { adminEnvSessionKey, getAdminEnv, ENVIRONMENTS, projectRefOf } from '../
 
 const activeEnv = getAdminEnv();
 
+const ENV_BADGE_CLASS: Record<typeof activeEnv, string> = {
+  prod: 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400',
+  staging: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400',
+  migration: 'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-400',
+};
+
+const ENV_DOT_CLASS: Record<typeof activeEnv, string> = {
+  prod: 'bg-emerald-500',
+  staging: 'bg-amber-500',
+  migration: 'bg-violet-500',
+};
+
 export function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -66,8 +78,8 @@ export function LoginPage() {
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
             Sign in with your admin account
           </p>
-          <span className={`inline-flex items-center gap-1.5 mt-3 px-2.5 py-1 rounded-full text-[11px] font-semibold ${activeEnv === 'staging' ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400' : 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400'}`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${activeEnv === 'staging' ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+          <span className={`inline-flex items-center gap-1.5 mt-3 px-2.5 py-1 rounded-full text-[11px] font-semibold ${ENV_BADGE_CLASS[activeEnv]}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${ENV_DOT_CLASS[activeEnv]}`} />
             {ENVIRONMENTS[activeEnv].label} environment · {projectRefOf(activeEnv)}
           </span>
         </div>

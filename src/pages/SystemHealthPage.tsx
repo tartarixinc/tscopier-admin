@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   applyHysteresis,
@@ -17,9 +17,28 @@ import {
   type UserHealth,
 } from '../lib/systemHealth';
 import { ENVIRONMENTS, getAdminEnv } from '../lib/environment';
+import {
+  MAP_KEY_TO_CHECK,
+  MAP_KEY_TO_PROBE,
+  MAP_NODE_COPY,
+  ORGAN_COPY,
+  agoFmt,
+  probeHealth,
+  railwayBox,
+  type OrganId,
+} from '../lib/healthMapCopy';
 import { authSupabase, fetchDisplayNames } from '../lib/adminSupabase';
+import {
+  acknowledgeAlert,
+  fetchMonitoringOverlay,
+  probeTargetLabel,
+  type MonitoringOverlay,
+  type OpenAlertEvent,
+  type ProbeTargetSummary,
+} from '../lib/monitoringOverlay';
 import { UserLink } from '../components/UserLink';
 import { JsonViewer } from '../components/JsonViewer';
+import { HealthAssistantPanel } from '../components/HealthAssistantPanel';
 import { ChevronDown, ChevronRight, Crosshair, User as UserIcon, Wifi, Activity, AlertTriangle, Check } from 'lucide-react';
 
 const REFRESH_MS = 30_000;
@@ -60,12 +79,13 @@ function fmtDur(ms: number | null): string {
 // Generic modal shell — Escape closes, backdrop click closes.
 // ---------------------------------------------------------------------------
 
-function ModalShell({ title, dotColor, onClose, children, wide }: {
+function ModalShell({ title, dotColor, onClose, children, wide, labelledBy }: {
   title: React.ReactNode;
   dotColor: string;
   onClose: () => void;
   children: React.ReactNode;
   wide?: boolean;
+  labelledBy?: string;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -74,13 +94,13 @@ function ModalShell({ title, dotColor, onClose, children, wide }: {
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby={labelledBy}>
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
       <div className={`relative w-full ${wide ? 'max-w-4xl' : 'max-w-2xl'} max-h-[85vh] overflow-y-auto card p-6 shadow-xl`}>
         <div className="flex items-start justify-between gap-4 mb-3">
           <div className="flex items-center gap-2.5">
             <span className={`h-3 w-3 rounded-full ${dotColor}`} />
-            <h3 className="text-base font-bold">{title}</h3>
+            <h3 id={labelledBy} className="text-base font-bold">{title}</h3>
           </div>
           <button onClick={onClose} aria-label="Close" className="text-slate-400 hover:text-slate-600 text-xl leading-none">×</button>
         </div>
@@ -265,28 +285,8 @@ function StageModal({
 // ---------------------------------------------------------------------------
 // System organs — the components that power the machine. Each opens its own
 // modal fed entirely from the report (no extra queries needed).
+// Plain-English organ copy lives in lib/healthMapCopy.ts.
 // ---------------------------------------------------------------------------
-
-type OrganId = 'workers' | 'telegram' | 'brokers' | 'railway';
-
-const ORGAN_COPY: Record<OrganId, { label: string; what: string }> = {
-  workers: {
-    label: 'Workers',
-    what: 'Listener workers hold a renewable lease (≈45s TTL) for every Telegram account they actively poll. A live lease proves a worker is alive and owns that user\'s listening loop.',
-  },
-  telegram: {
-    label: 'Telegram link',
-    what: 'A linked session means the user connected their Telegram account once. Listening now means a worker is actively polling that account at this moment.',
-  },
-  brokers: {
-    label: 'Broker links',
-    what: 'Each user connects broker accounts through which trades execute. Recovering means auto-reconnect is in progress; error needs the user to reconnect.',
-  },
-  railway: {
-    label: 'Worker process logs',
-    what: 'Live Railway deployment logs watched for worker crashes, realtime subscription churn, and log rate-limits — the exact pattern of the Aug 25 retry storm.',
-  },
-};
 
 function organState(checks: CheckResult[], id: OrganId): CheckResult | undefined {
   return checks.find(c => c.id === id);
@@ -455,6 +455,534 @@ function OrganModal({ organ, report, onClose }: { organ: OrganId; report: Report
 
 function railwayFmt(n: number): string {
   return n.toLocaleString();
+}
+
+// ---------------------------------------------------------------------------
+// Layer 0 — alert bar. Open server-side alerts (alert_events), acknowledged
+// in place through the audited admin-mutate action.
+// ---------------------------------------------------------------------------
+
+const SEVERITY_PILL: Record<string, string> = {
+  critical: 'bg-error-100 text-error-700 dark:bg-error-900/50 dark:text-error-300',
+  warning: 'bg-warning-100 text-warning-700 dark:bg-warning-900/50 dark:text-warning-300',
+  info: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300',
+};
+
+function AlertBar({ alerts, nowTick, onAck }: {
+  alerts: OpenAlertEvent[];
+  nowTick: number;
+  onAck: (alert: OpenAlertEvent) => void;
+}) {
+  if (alerts.length === 0) return null;
+  const worst = alerts.some(a => a.severity === 'critical') ? 'critical'
+    : alerts.some(a => a.severity === 'warning') ? 'warning' : 'info';
+  const shell = worst === 'critical'
+    ? 'border-error-500 bg-error-50 dark:bg-error-900/30'
+    : worst === 'warning'
+      ? 'border-warning-400 bg-warning-50 dark:bg-warning-900/30'
+      : 'border-slate-300 bg-slate-50 dark:bg-slate-800';
+
+  return (
+    <div className={`rounded-lg border-l-4 ${shell} px-4 py-3 space-y-2`}>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <p className="text-sm font-bold text-slate-700 dark:text-slate-200">
+          <AlertBarIcon />
+          {alerts.length} open alert{alerts.length !== 1 ? 's' : ''}
+        </p>
+        <Link to="/monitoring/alerts" className="text-xs font-medium underline text-primary-600 dark:text-primary-400">
+          Open the Alerts console →
+        </Link>
+      </div>
+      {alerts.slice(0, 4).map(a => (
+        <div key={a.id} className="flex items-start gap-2 text-sm flex-wrap">
+          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide ${SEVERITY_PILL[a.severity] ?? SEVERITY_PILL.info}`}>
+            {a.severity}
+          </span>
+          <span className="font-semibold text-slate-700 dark:text-slate-200">{a.alert_rules?.name ?? a.rule_code}</span>
+          <span className="text-slate-600 dark:text-slate-300 flex-1 min-w-[200px]">{a.message}</span>
+          <span className="text-xs text-slate-400">
+            {a.state === 'acknowledged' ? 'acknowledged' : 'firing'} · {agoFmt(nowTick - Date.parse(a.created_at))}
+          </span>
+          {a.state === 'firing' && (
+            <button
+              onClick={() => onAck(a)}
+              className="px-2 py-0.5 text-xs rounded border border-slate-300 dark:border-slate-600 hover:bg-white dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300"
+            >
+              Acknowledge
+            </button>
+          )}
+        </div>
+      ))}
+      {alerts.length > 4 && (
+        <p className="text-xs text-slate-400">+ {alerts.length - 4} more in the Alerts console.</p>
+      )}
+    </div>
+  );
+}
+
+function AlertBarIcon() {
+  return <AlertTriangle className="inline h-4 w-4 -mt-0.5 mr-1" />;
+}
+
+// ---------------------------------------------------------------------------
+// Layer 2 — connection map: every system component and how they connect.
+// ---------------------------------------------------------------------------
+
+interface MapNodeDef {
+  key: string;
+  label: string;
+  value: string;
+  state: HealthState;
+  title?: string;
+  /** Plain-English: what this component is. */
+  what: string;
+  /** Plain-English: what breaks for users if this stays down. */
+  impact: string;
+  /** Alert rule codes whose open events belong to this component. */
+  rules: string[];
+}
+
+function MapNode({ node, onSelect }: { node: MapNodeDef; onSelect: (n: MapNodeDef) => void }) {
+  return (
+    <button
+      type="button"
+      title={node.title ? `${node.title} — click for details` : 'Click for details'}
+      onClick={() => onSelect(node)}
+      className={`shrink-0 w-[124px] rounded-lg border px-2.5 py-2 text-center cursor-pointer transition-all hover:-translate-y-px hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-400 ${NODE_STATE_STYLE[node.state]}`}
+    >
+      <div className="flex items-center justify-center gap-1.5">
+        <span className={`h-2 w-2 rounded-full shrink-0 ${STATE_DOT[node.state]}`} />
+        <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300 truncate">{node.label}</span>
+      </div>
+      <p className="mt-0.5 text-sm font-bold leading-tight truncate">{node.value}</p>
+    </button>
+  );
+}
+
+function MapNodeModal({ node, probe, check, report, alerts, alertsReadable, nowTick, onClose }: {
+  node: MapNodeDef;
+  probe: ProbeTargetSummary | undefined;
+  check: CheckResult | undefined;
+  report: Report;
+  alerts: OpenAlertEvent[];
+  alertsReadable: boolean;
+  nowTick: number;
+  onClose: () => void;
+}) {
+  const titleId = useId();
+  const related = alerts.filter(a => node.rules.includes(a.rule_code));
+  const showRailwayLogs = node.key === 'railway' && report.railway.available;
+
+  return (
+    <ModalShell title={node.label} dotColor={STATE_DOT[node.state]} onClose={onClose} labelledBy={titleId}>
+      <p className={`text-lg font-bold mb-3 ${node.state === 'ok' ? 'text-success-700 dark:text-success-400' : node.state === 'fail' ? 'text-error-700 dark:text-error-400' : node.state === 'warn' ? 'text-warning-700 dark:text-warning-400' : 'text-slate-500'}`}>
+        Right now: {node.value}
+      </p>
+
+      <section className="mb-4">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1">What this is</h4>
+        <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-300">{node.what}</p>
+      </section>
+
+      {(check?.summary ?? node.title) && (
+        <section className="mb-4">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1">Current status</h4>
+          <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-300">{check?.summary ?? node.title}</p>
+          {check?.detail && <p className="mt-1 text-xs leading-relaxed text-slate-400">{check.detail}</p>}
+        </section>
+      )}
+
+      {probe && (
+        <section className="mb-4">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1">Probe metrics</h4>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-slate-600 dark:text-slate-300">
+            <span>State</span><span className="font-semibold">{probe.state}{probe.state === 'up' && probe.latencyMs != null ? ` (${probe.latencyMs}ms)` : ''}</span>
+            <span>Last report</span><span>{probe.lastReportAt ? `${agoFmt(nowTick - Date.parse(probe.lastReportAt))} ago` : 'never'}</span>
+            <span>Uptime (24h)</span><span>{probe.uptime24hPct != null ? `${probe.uptime24hPct}%` : 'no samples yet'}</span>
+            <span>p95 latency</span><span>{probe.p95LatencyMs != null ? `${probe.p95LatencyMs}ms` : '—'}</span>
+            {probe.consecutiveFailures > 0 && (<><span>Consecutive failures</span><span className="font-semibold text-error-600 dark:text-error-400">{probe.consecutiveFailures}</span></>)}
+            {probe.downSince && (<><span>Down since</span><span className="font-semibold text-error-600 dark:text-error-400">{agoFmt(nowTick - Date.parse(probe.downSince))} ago</span></>)}
+            {probe.detail && (<><span>Detail</span><span>{probe.detail}</span></>)}
+          </div>
+          {probe.recentEvents.length > 0 && (
+            <table className="mt-2 w-full text-xs text-slate-500 dark:text-slate-400">
+              <tbody>
+                {probe.recentEvents.slice(0, 4).map((e, i) => (
+                  <tr key={`${e.created_at}-${i}`}>
+                    <td className="py-0.5 pr-2 whitespace-nowrap">{new Date(e.created_at).toLocaleTimeString()}</td>
+                    <td className={`py-0.5 pr-2 font-semibold ${e.state === 'up' ? 'text-success-600 dark:text-success-400' : 'text-error-600 dark:text-error-400'}`}>{e.state}</td>
+                    <td className="py-0.5">{e.latency_ms != null ? `${e.latency_ms}ms` : ''}{e.detail ? ` — ${e.detail}` : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      )}
+
+      {showRailwayLogs && (
+        <section className="mb-4">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1">Worker log scan (24h)</h4>
+          <p className="text-sm text-slate-600 dark:text-slate-300">
+            Worker fatals: <b>{railwayFmt(report.railway.workerFatal)}</b> · Uncaught exceptions: <b>{railwayFmt(report.railway.uncaughtExceptions)}</b> · Realtime failures: <b>{railwayFmt(report.railway.realtimeFailures)}</b>
+          </p>
+        </section>
+      )}
+
+      <section className="mb-4">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1">Open alerts for this component</h4>
+        {!alertsReadable ? (
+          <p className="text-sm text-warning-700 dark:text-warning-400">Alert data unavailable — check the Alerts console.</p>
+        ) : related.length === 0 ? (
+          <p className="text-sm text-slate-400">None in the latest alert snapshot.</p>
+        ) : (
+          <ul className="space-y-2">
+            {related.map(a => (
+              <li key={a.id} className={`rounded-md border px-3 py-2 text-sm ${a.severity === 'critical' ? 'border-error-300 bg-error-50 dark:bg-error-900/30 dark:border-error-800' : a.severity === 'warning' ? 'border-warning-300 bg-warning-50 dark:bg-warning-900/30 dark:border-warning-800' : 'border-slate-200 dark:border-slate-700'}`}>
+                <span className="font-semibold">{a.alert_rules?.name ?? a.rule_code}</span>
+                <span className="ml-2 text-[10px] uppercase tracking-wide text-slate-400">{a.severity} · {a.state}</span>
+                <p className="mt-0.5 text-xs leading-snug text-slate-600 dark:text-slate-300">{a.message}</p>
+                <p className="mt-0.5 text-[11px] text-slate-400">
+                  Fired {new Date(a.created_at).toLocaleString()}
+                  {a.email_sent_at ? ' · email sent' : ' · email not sent yet'}
+                  {a.acknowledged_at ? ' · acknowledged' : ''}
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section>
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1">If this stays down</h4>
+        <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-300">{node.impact}</p>
+      </section>
+    </ModalShell>
+  );
+}
+
+function MapArrow({ label }: { label?: string }) {
+  return (
+    <span className="shrink-0 text-slate-300 dark:text-slate-600 text-lg leading-none select-none">
+      {label ? <span className="text-[10px] font-medium text-slate-400 mr-1">{label}</span> : null}→
+    </span>
+  );
+}
+
+function ConnectionMap({ report, overlay, nowTick }: {
+  report: Report;
+  overlay: MonitoringOverlay | null;
+  nowTick: number;
+}) {
+  const [selected, setSelected] = useState<MapNodeDef | null>(null);
+  const closeSelected = useCallback(() => setSelected(null), []);
+  const check = (id: string) => report.checks.find(c => c.id === id);
+  const probe = (t: string) => overlay?.probes.find(p => p.target === t);
+
+  const workers = check('workers');
+  const telegram = check('telegram');
+  const queue = check('queue');
+  const copying = check('copying');
+  const brokers = check('brokers');
+
+  const tradeWorker = probeHealth(probe('worker_trade'), nowTick);
+  const bridgeMt5 = probeHealth(probe('bridge_mt5'), nowTick);
+  const bridgeMt4 = probeHealth(probe('bridge_mt4'), nowTick);
+  const evaluator = probeHealth(probe('alert_evaluator'), nowTick);
+
+  const chain: MapNodeDef[] = [
+    {
+      ...MAP_NODE_COPY['telegram-src'],
+      key: 'telegram-src',
+      value: `${report.telegram.listeningNow}/${report.telegram.linked}`,
+      state: telegram?.state ?? 'unknown',
+      title: telegram?.summary,
+    },
+    {
+      ...MAP_NODE_COPY.listeners,
+      key: 'listeners',
+      value: String(report.activeLeases),
+      state: workers?.state ?? 'unknown',
+      title: workers?.summary,
+    },
+    {
+      ...MAP_NODE_COPY.signals,
+      key: 'signals',
+      value: report.flow.reliable ? report.flow.received.toLocaleString() : '—',
+      state: copying?.state ?? 'unknown',
+      title: copying?.summary,
+    },
+    {
+      ...MAP_NODE_COPY.queue,
+      key: 'queue',
+      value: String(report.flow.pendingInFlight),
+      state: queue?.state ?? 'unknown',
+      title: queue?.summary,
+    },
+    {
+      ...MAP_NODE_COPY['trade-workers'],
+      key: 'trade-workers',
+      value: tradeWorker.value,
+      state: tradeWorker.state,
+      title: tradeWorker.title,
+    },
+  ];
+
+  const branch: MapNodeDef[] = [
+    {
+      ...MAP_NODE_COPY['bridge-mt5'],
+      key: 'bridge-mt5',
+      value: bridgeMt5.value,
+      state: bridgeMt5.state,
+      title: bridgeMt5.title,
+    },
+    {
+      ...MAP_NODE_COPY['bridge-mt4'],
+      key: 'bridge-mt4',
+      value: bridgeMt4.value,
+      state: bridgeMt4.state,
+      title: bridgeMt4.title,
+    },
+  ];
+
+  const tail: MapNodeDef = {
+    ...MAP_NODE_COPY['broker-accounts'],
+    key: 'broker-accounts',
+    value: String(report.brokers.connected + report.brokers.recovering + report.brokers.error),
+    state: brokers?.state ?? 'unknown',
+    title: brokers?.summary,
+  };
+
+  // Railway hosts the listener and trade-worker services. Their liveness is
+  // already measured (heartbeat probe + listener leases), so the box derives
+  // solely from those — one shared derivation (lib/healthMapCopy) for both
+  // this map and the assistant snapshot, so they can never contradict.
+  const railBox = railwayBox(tradeWorker.state, workers?.state);
+  const support: MapNodeDef[] = [
+    {
+      ...MAP_NODE_COPY.database,
+      key: 'database',
+      value: report.dbReachable ? 'reachable' : 'DOWN',
+      state: report.dbReachable ? 'ok' : 'fail',
+      title: `Clock offset vs DB: ${report.clockOffsetMs >= 0 ? '+' : ''}${Math.round(report.clockOffsetMs / 1000)}s`,
+    },
+    {
+      ...MAP_NODE_COPY.railway,
+      key: 'railway',
+      value: railBox.value,
+      state: railBox.state,
+      title: railBox.title,
+    },
+    {
+      ...MAP_NODE_COPY.scheduler,
+      key: 'scheduler',
+      value: evaluator.value,
+      state: evaluator.state,
+      title: evaluator.title || 'Cron-driven alert evaluator, runs every minute',
+    },
+    {
+      ...MAP_NODE_COPY.backtest,
+      key: 'backtest',
+      value: 'on demand',
+      state: 'unknown',
+      title: 'Backtest runs are triggered manually from the Backtests page — idle is normal.',
+    },
+  ];
+
+  const allNodes = [...chain, ...branch, tail, ...support];
+  const selectedNode = selected ? allNodes.find(n => n.key === selected.key) ?? selected : null;
+
+  return (
+    <div className="card p-5 space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h2 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
+          Connection map — every component and how they connect
+        </h2>
+        <span className="text-xs text-slate-400">click any box for what it is, live status, and open issues</span>
+      </div>
+
+      <div className="overflow-x-auto pb-1">
+        <div className="inline-flex items-center gap-2 min-w-max">
+          {chain.map((node, i) => (
+            <div key={node.key} className="flex items-center gap-2">
+              {i > 0 && <MapArrow />}
+              <MapNode node={node} onSelect={setSelected} />
+            </div>
+          ))}
+        </div>
+
+        <div className="inline-flex items-center gap-2 min-w-max mt-2 pl-6">
+          <span className="text-slate-300 dark:text-slate-600 text-xs select-none">↳ executes through</span>
+          {branch.map(node => (
+            <MapNode key={node.key} node={node} onSelect={setSelected} />
+          ))}
+          <MapArrow />
+          <MapNode node={tail} onSelect={setSelected} />
+        </div>
+
+        <div className="mt-3 pt-3 border-t border-dashed border-slate-200 dark:border-slate-700">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Supporting systems</p>
+          <div className="inline-flex items-center gap-2 flex-wrap">
+            {support.map(node => (
+              <MapNode key={node.key} node={node} onSelect={setSelected} />
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {!overlay && (
+        <p className="text-xs text-slate-400">Probe and alert overlay unavailable — bridge states above show “—”.</p>
+      )}
+      {overlay && !overlay.probesReadable && (
+        <p className="text-xs text-warning-600 dark:text-warning-400">
+          Probe tables unreadable — apply supabase/migrations/20261012120000_system_probe_state.sql and the admin read policy migration.
+        </p>
+      )}
+
+      {selectedNode && (
+        <MapNodeModal
+          node={selectedNode}
+          probe={probe(MAP_KEY_TO_PROBE[selectedNode.key] ?? '')}
+          check={check(MAP_KEY_TO_CHECK[selectedNode.key] ?? '')}
+          report={report}
+          alerts={overlay?.openAlerts ?? []}
+          alertsReadable={overlay?.alertsReadable ?? false}
+          nowTick={nowTick}
+          onClose={closeSelected}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Layer 3 — check tiles: every computed health check, visible at last.
+// ---------------------------------------------------------------------------
+
+function CheckTiles({ checks }: { checks: CheckResult[] }) {
+  const [selected, setSelected] = useState<string | null>(null);
+  if (checks.length === 0) return null;
+  return (
+    <div className="space-y-2">
+      <h2 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
+        Health checks — every check the system runs
+      </h2>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        {checks.map(c => (
+          <button
+            key={c.id}
+            onClick={() => setSelected(prev => (prev === c.id ? null : c.id))}
+            className={`text-left rounded-lg border px-3 py-2.5 transition-all hover:-translate-y-px hover:shadow-sm ${NODE_STATE_STYLE[c.state]}`}
+          >
+            <div className="flex items-center gap-2">
+              <span className={`h-2 w-2 rounded-full shrink-0 ${STATE_DOT[c.state]}`} />
+              <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide flex-1 truncate">{c.label}</span>
+            </div>
+            <p className="mt-1 text-sm font-bold leading-snug">{c.summary}</p>
+            {c.context && <p className="mt-0.5 text-[11px] leading-snug text-slate-400">{c.context}</p>}
+            {selected === c.id && c.detail && (
+              <p className="mt-2 pt-2 border-t border-slate-200 dark:border-slate-700 text-[11px] leading-snug text-slate-500 dark:text-slate-300 text-left">
+                {c.detail}
+              </p>
+            )}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Layer 4 — probe panel: bridge liveness, worker heartbeat, evaluator
+// dead-man, with 24h uptime and recent transitions.
+// ---------------------------------------------------------------------------
+
+function ProbePanel({ overlay, nowTick }: { overlay: MonitoringOverlay | null; nowTick: number }) {
+  const transitions = (overlay?.probes ?? [])
+    .flatMap(p => p.recentEvents)
+    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
+    .slice(0, 6);
+
+  return (
+    <div className="card p-5 space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h2 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
+          Probes — bridge, heartbeat and evaluator liveness
+        </h2>
+        <Link to="/monitoring/alerts" className="text-xs underline text-primary-600 dark:text-primary-400">Alert rules →</Link>
+      </div>
+
+      {!overlay ? (
+        <p className="text-sm text-slate-400">Probe overlay unavailable.</p>
+      ) : !overlay.probesReadable ? (
+        <p className="text-sm text-warning-600 dark:text-warning-400">
+          Probe tables unreadable — the monitoring migrations have not been applied to this environment yet.
+        </p>
+      ) : overlay.probes.length === 0 ? (
+        <p className="text-sm text-slate-400">
+          No probe rows yet. The worker probe starts on the next trade-worker deploy (shard 0) once MTAPI_BASE_URL is configured.
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left text-slate-400 uppercase tracking-wide">
+                <th className="pb-2 pr-3">Target</th>
+                <th className="pb-2 pr-3">State</th>
+                <th className="pb-2 pr-3 text-right">Latency</th>
+                <th className="pb-2 pr-3 text-right">Last report</th>
+                <th className="pb-2 pr-3 text-right">24h uptime</th>
+                <th className="pb-2 pr-3 text-right">p95</th>
+                <th className="pb-2 pr-3 text-right">Fails in row</th>
+                <th className="pb-2">Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {overlay.probes.map(p => {
+                const h = probeHealth(p, nowTick);
+                return (
+                  <tr key={p.target} className="border-t border-slate-100 dark:border-slate-800">
+                    <td className="py-1.5 pr-3 font-medium">{probeTargetLabel(p.target)}</td>
+                    <td className="py-1.5 pr-3">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className={`h-2 w-2 rounded-full ${STATE_DOT[h.state]}`} />
+                        <span className={STATE_TEXT[h.state]}>
+                          {h.state === 'warn' ? 'stale' : h.state === 'ok' ? 'up' : h.state === 'fail' ? 'down' : 'unknown'}
+                        </span>
+                      </span>
+                    </td>
+                    <td className="py-1.5 pr-3 text-right">{p.latencyMs != null ? `${p.latencyMs}ms` : '—'}</td>
+                    <td className="py-1.5 pr-3 text-right">{p.lastReportAt ? `${agoFmt(nowTick - Date.parse(p.lastReportAt))} ago` : '—'}</td>
+                    <td className="py-1.5 pr-3 text-right">{p.uptime24hPct != null ? `${p.uptime24hPct}%` : '—'}</td>
+                    <td className="py-1.5 pr-3 text-right">{p.p95LatencyMs != null ? `${p.p95LatencyMs}ms` : '—'}</td>
+                    <td className="py-1.5 pr-3 text-right">{p.consecutiveFailures}</td>
+                    <td className="py-1.5 text-slate-400 max-w-[260px] truncate" title={p.detail ?? ''}>{p.detail ?? '—'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {transitions.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1">Recent transitions</p>
+          <div className="space-y-0.5">
+            {transitions.map((t, i) => (
+              <p key={`${t.target}-${t.created_at}-${i}`} className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                {new Date(t.created_at).toLocaleTimeString()} · {probeTargetLabel(t.target)} →{' '}
+                <span className={t.state === 'up' ? 'text-success-600 dark:text-success-400' : 'text-error-600 dark:text-error-400'}>
+                  {t.state}
+                </span>
+                {t.detail ? ` (${t.detail})` : ''}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1060,9 +1588,15 @@ export function SystemHealthPage() {
   const env = getAdminEnv();
   const envConfig = ENVIRONMENTS[env];
   const [openBucketKey, setOpenBucketKey] = useState<string | null>(null);
+  const [overlay, setOverlay] = useState<MonitoringOverlay | null>(null);
+  const [ackTarget, setAckTarget] = useState<OpenAlertEvent | null>(null);
+  const [ackReason, setAckReason] = useState('');
+  const [ackBusy, setAckBusy] = useState(false);
+  const [ackError, setAckError] = useState<string | null>(null);
 
   const refresh = useCallback(async (isCancelled: () => boolean): Promise<boolean> => {
     try {
+      const overlayPromise = fetchMonitoringOverlay().catch(() => null);
       const r = await fetchSystemHealth(windowHours);
       if (isCancelled()) return false;
       if (!r.dbReachable) {
@@ -1075,12 +1609,32 @@ export function SystemHealthPage() {
       const stabilized = applyHysteresis(r.checks, windowHours);
       setReport({ ...r, checks: stabilized });
       setVerdict(computeVerdict(r, stabilized));
+      const o = await overlayPromise;
+      if (!isCancelled() && o) setOverlay(o);
       return r.dbReachable;
     } catch (err) {
       if (!isCancelled()) setLoadError(err instanceof Error ? err.message : String(err));
       return false;
     }
   }, [windowHours]);
+
+  const submitAck = useCallback(async () => {
+    if (!ackTarget) return;
+    const reason = ackReason.trim() || 'acknowledged from Systems Health';
+    setAckBusy(true);
+    setAckError(null);
+    try {
+      await acknowledgeAlert(ackTarget.id, reason);
+      const o = await fetchMonitoringOverlay().catch(() => null);
+      if (o) setOverlay(o);
+      setAckTarget(null);
+      setAckReason('');
+    } catch (err) {
+      setAckError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAckBusy(false);
+    }
+  }, [ackTarget, ackReason]);
 
   useEffect(() => {
     let timer: number | undefined;
@@ -1161,11 +1715,25 @@ export function SystemHealthPage() {
         </div>
       )}
 
+      {/* Layer 0 — open alerts acknowledged in place */}
+      {overlay && overlay.alertsReadable && (
+        <AlertBar alerts={overlay.openAlerts} nowTick={nowTick} onAck={a => { setAckError(null); setAckReason(''); setAckTarget(a); }} />
+      )}
+
       {!report ? (
         <div className="card p-6"><div className="skeleton h-40 w-full" /></div>
       ) : (
         <>
+          {/* Layer 2 — complete connection map */}
+          <ConnectionMap report={report} overlay={overlay} nowTick={nowTick} />
+
+          {/* Layer 3 — every health check as a tile */}
+          <CheckTiles checks={report.checks} />
+
           <TheMachine report={report} windowHours={report.windowHours} />
+
+          {/* Layer 4 — probe detail (bridge, heartbeat, evaluator) */}
+          <ProbePanel overlay={overlay} nowTick={nowTick} />
 
           <div className="grid lg:grid-cols-2 gap-5">
             <SupportConsole windowHours={windowHours} />
@@ -1212,6 +1780,54 @@ export function SystemHealthPage() {
               baselinePerWindow={report.failureBaselinePerWindow}
               windowHours={report.windowHours}
               onClose={() => setOpenBucketKey(null)}
+            />
+          )}
+
+          {ackTarget && (
+            <ModalShell
+              title={`Acknowledge: ${ackTarget.alert_rules?.name ?? ackTarget.rule_code}`}
+              dotColor={ackTarget.severity === 'critical' ? 'bg-error-500' : 'bg-warning-500'}
+              onClose={() => setAckTarget(null)}
+            >
+              <div className="space-y-3">
+                <p className="text-sm text-slate-600 dark:text-slate-300">{ackTarget.message}</p>
+                <p className="text-xs text-slate-400">
+                  Acknowledging mutes re-firing until the condition clears. The alert stays visible as acknowledged, and the action is written to the admin audit log.
+                </p>
+                <textarea
+                  value={ackReason}
+                  onChange={e => setAckReason(e.target.value)}
+                  placeholder="Reason (required) — e.g. investigating, expected maintenance"
+                  className="w-full rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm"
+                  rows={2}
+                />
+                {ackError && <p className="text-xs text-error-600 dark:text-error-400">{ackError}</p>}
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={() => setAckTarget(null)}
+                    className="px-3 py-1.5 text-xs rounded-md border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => void submitAck()}
+                    disabled={ackBusy}
+                    className="px-3 py-1.5 text-xs rounded-md bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50"
+                  >
+                    {ackBusy ? 'Acknowledging…' : 'Acknowledge'}
+                  </button>
+                </div>
+              </div>
+            </ModalShell>
+          )}
+
+          {verdict && (
+            <HealthAssistantPanel
+              key={env}
+              report={report}
+              verdict={verdict}
+              overlay={overlay}
+              envLabel={envConfig.label}
             />
           )}
         </>

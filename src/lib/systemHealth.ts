@@ -50,6 +50,7 @@ const PIPELINE_SUMMARY_CAP = 2000;
 const RANGE_WAITS_CAP = 5000;
 const BROKER_ERROR_KINDS_CAP = 500;
 const SESSIONS_CAP = 1000;
+const NOT_LISTENING_DETAIL_CAP = 40;
 
 export type HealthWindow = 1 | 6 | 24; // hours
 export type HealthState = 'ok' | 'warn' | 'fail' | 'unknown';
@@ -108,6 +109,30 @@ export interface FleetRow {
   lastHeartbeatAgeSec: number | null;
 }
 
+export interface NotListeningDetail {
+  userId: string;
+  /** An unexpired worker_session_leases row exists for this user. */
+  hasActiveLease: boolean;
+  leaseWorker: string | null;
+  leaseShard: number | null;
+  /** Seconds until the lease expires; negative = expired that long ago. */
+  leaseExpiresInSec: number | null;
+  /** Age of the lease row's last update (renewal heartbeat), null when no lease. */
+  leaseAgeSec: number | null;
+  /** From copier_listener_health — null when the user has no health row. */
+  listenerStatus: string | null;
+  mtprotoConnected: boolean | null;
+  ownershipStatus: string | null;
+  /** Age of the health row itself (updated_at) — how stale the report is. */
+  healthRowAgeSec: number | null;
+  /** Age of the last successful Telegram probe. */
+  lastProbeAgeSec: number | null;
+  /** subscriptions.status for the user, null when unknown. */
+  subStatus: string | null;
+  /** user_profiles.copier_paused — paused copiers are not an incident. */
+  copierPaused: boolean | null;
+}
+
 export interface TelegramPanel {
   reliable: boolean;
   linked: number;
@@ -124,6 +149,10 @@ export interface TelegramPanel {
   truthful: boolean;
   authPending: number;
   linkedNotListeningUsers: string[];
+  /** Accounts actively listening right now (capped at 40, for naming them). */
+  listeningUserIds: string[];
+  /** Per-account root-cause data for the not-listening set (capped at 40). */
+  notListeningDetail: NotListeningDetail[];
 }
 
 export interface BrokerPanel {
@@ -404,6 +433,165 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
   const sinceIso = new Date(windowStartMs).toISOString();
   const nowIso = new Date(serverNowMs).toISOString();
 
+  // --- Prefetch: start every independent query up front. Each depends only on
+  // the window constants above, so the round-trips now overlap instead of
+  // running one-after-another (the sequential waterfall was the source of the
+  // multi-second skeleton on first load). Results are awaited below in the
+  // original order; all post-processing is unchanged.
+  const graceCutoffIso = new Date(serverNowMs - HEALTH_THRESHOLDS.stuckParsedGraceMin * 60_000).toISOString();
+  const baselineSince = new Date(serverNowMs - (7 * 24 + windowHours) * 3_600_000).toISOString();
+  const baselineUntil = new Date(serverNowMs - windowHours * 3_600_000).toISOString();
+
+  const countIn = async (label: string, statusFilter: string[] | null): Promise<number | null> => {
+    let q = authSupabase.from('signals').select('id', { count: 'exact', head: true }).gte('created_at', sinceIso);
+    if (statusFilter) q = q.in('status', statusFilter);
+    return headCount(label, unreadableSources, () => q);
+  };
+
+  const leasesP = fetchRows<LeaseRow>(
+    'worker_session_leases',
+    unreadableSources,
+    () => authSupabase.from('worker_session_leases').select('user_id, worker_id, role, shard_id, shard_count, expires_at, updated_at'),
+  );
+  const countsP = Promise.all([
+    countIn('signals.received', null),
+    countIn('signals.tradeable', ['parsed', 'executed', 'failed']),
+    countIn('signals.executed', ['executed']),
+    countIn('signals.failed', ['failed']),
+    countIn('signals.skipped', ['skipped']),
+    countIn('signals.pending', ['pending']),
+  ]);
+  const oldestPendingP = fetchRows<{ created_at: string }>(
+    'signals.pending.oldest',
+    unreadableSources,
+    () => authSupabase.from('signals').select('created_at').eq('status', 'pending').order('created_at', { ascending: true }).limit(1),
+  );
+  const parsedOldP = fetchRows<{ id: string }>(
+    'signals.parsed.old',
+    unreadableSources,
+    () => authSupabase
+      .from('signals')
+      .select('id')
+      .eq('status', 'parsed')
+      .gte('created_at', sinceIso)
+      .lte('created_at', graceCutoffIso)
+      .order('created_at', { ascending: true })
+      .limit(PARSED_OLDEST_CAP),
+  );
+  const waitingP = fetchRows<{ signal_id: string }>(
+    'signal_range_entry_waits',
+    unreadableSources,
+    () => authSupabase.from('signal_range_entry_waits').select('signal_id').eq('status', 'waiting').limit(RANGE_WAITS_CAP),
+  );
+  const claimsP = fetchRows<{ signal_id: string; created_at: string }>(
+    'signal_broker_dispatch_claims',
+    unreadableSources,
+    () => authSupabase
+      .from('signal_broker_dispatch_claims')
+      .select('signal_id, created_at')
+      .gte('created_at', sinceIso)
+      .order('created_at', { ascending: true })
+      .limit(CLAIMS_CAP),
+    CLAIMS_CAP,
+  );
+  const tsRowsP = fetchRows<{ pipeline_ts: unknown }>(
+    'signals.latency-sample',
+    unreadableSources,
+    () => authSupabase
+      .from('signals')
+      .select('pipeline_ts')
+      .gte('created_at', sinceIso)
+      .order('created_at', { ascending: false })
+      .limit(SIGNALS_SAMPLE_CAP),
+    SIGNALS_SAMPLE_CAP,
+  );
+  const summaryRowsP = fetchRows<{ total_ms: string | null }>(
+    'trade_execution_logs.pipeline_summary',
+    unreadableSources,
+    () => authSupabase
+      .from('trade_execution_logs')
+      .select('total_ms:request_payload->>total_ms')
+      .eq('action', 'pipeline_summary')
+      .gte('created_at', sinceIso)
+      .limit(PIPELINE_SUMMARY_CAP),
+    PIPELINE_SUMMARY_CAP,
+  );
+  const trendRowsP = fetchRows<{ status: string | null; created_at: string }>(
+    'signals.trend',
+    unreadableSources,
+    () => authSupabase
+      .from('signals')
+      .select('status,created_at')
+      .gte('created_at', sinceIso)
+      .order('created_at', { ascending: false })
+      .limit(3000),
+    3000,
+  );
+  const sessionsP = fetchRows<{ user_id: string }>(
+    'telegram_sessions',
+    unreadableSources,
+    () => authSupabase.from('telegram_sessions').select('user_id').limit(SESSIONS_CAP),
+    SESSIONS_CAP,
+  );
+  // Best-effort (no admin SELECT policy): failure shows 0 and must NOT count
+  // as an unreadable source — wrapped in an IIFE so the request fires now.
+  const authPendingP = (async () =>
+    authSupabase
+      .from('telegram_auth_pending')
+      .select('user_id', { count: 'exact', head: true })
+      .gt('expires_at', nowIso))();
+  const healthRowsP = fetchRows<{
+    user_id: string;
+    listener_status: string | null;
+    mtproto_connected: boolean | null;
+    worker_ownership_status: string | null;
+    updated_at: string | null;
+    last_successful_probe_at: string | null;
+    freshness_threshold_ms: number | null;
+  }>(
+    'listener_health',
+    unreadableSources,
+    () => authSupabase.from('copier_listener_health')
+      .select('user_id, listener_status, mtproto_connected, worker_ownership_status, updated_at, last_successful_probe_at, freshness_threshold_ms'),
+  );
+  const brokerCountsP = Promise.all([
+    headCount('broker_accounts.connected', unreadableSources,
+      () => authSupabase.from('broker_accounts').select('id', { count: 'exact', head: true }).eq('connection_status', 'connected')),
+    headCount('broker_accounts.recovering', unreadableSources,
+      () => authSupabase.from('broker_accounts').select('id', { count: 'exact', head: true }).eq('connection_status', 'recovering')),
+    headCount('broker_accounts.error', unreadableSources,
+      () => authSupabase.from('broker_accounts').select('id', { count: 'exact', head: true }).eq('connection_status', 'error')),
+  ]);
+  const brokerErrRowsP = fetchRows<{ connection_error_kind: string | null }>(
+    'broker_accounts.errors',
+    unreadableSources,
+    () => authSupabase.from('broker_accounts').select('connection_error_kind').eq('connection_status', 'error').limit(BROKER_ERROR_KINDS_CAP),
+  );
+  const deadLettersP = headCount(
+    'signal_queue_dead_letters',
+    unreadableSources,
+    () => authSupabase.from('signal_queue_dead_letters').select('id', { count: 'exact', head: true }).is('replayed_at', null),
+  );
+  const execLogsP = fetchRows<ExecLogRow>(
+    'trade_execution_logs.failures',
+    unreadableSources,
+    () => authSupabase
+      .from('trade_execution_logs')
+      .select('id, user_id, status, action, error_message, broker_account_id, signal_id, request_payload, response_payload, created_at')
+      .eq('status', 'failed')
+      .gte('created_at', sinceIso)
+      .limit(3000),
+    3000,
+  );
+  const baselineP = (async () =>
+    authSupabase
+      .from('trade_execution_logs')
+      .select('status', { count: 'exact', head: true })
+      .eq('status', 'failed')
+      .gte('created_at', baselineSince)
+      .lt('created_at', baselineUntil))();
+  const railwayP = fetchRailwayHealth(windowHours);
+
   // --- Worker fleet + active copier leases. Use the table's real role/shard
   // columns (not the worker_id string) — instance ids can contain colons.
   interface LeaseRow {
@@ -415,11 +603,7 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
     expires_at: string | null;
     updated_at: string | null;
   }
-  const leases = await fetchRows<LeaseRow>(
-    'worker_session_leases',
-    unreadableSources,
-    () => authSupabase.from('worker_session_leases').select('user_id, worker_id, role, shard_id, shard_count, expires_at, updated_at'),
-  );
+  const leases = await leasesP;
   const activeLeases = (leases ?? []).filter(l => l.expires_at != null && l.expires_at > nowIso);
   const fleetMap = new Map<string, FleetRow>();
   for (const l of activeLeases) {
@@ -444,27 +628,10 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
   const listeningUserIds = new Set(activeLeases.map(l => l.user_id));
 
   // --- Flow board head-counts (exact, zero rows).
-  const countIn = async (label: string, statusFilter: string[] | null): Promise<number | null> => {
-    let q = authSupabase.from('signals').select('id', { count: 'exact', head: true }).gte('created_at', sinceIso);
-    if (statusFilter) q = q.in('status', statusFilter);
-    return headCount(label, unreadableSources, () => q);
-  };
-  const [received, tradeable, executed, failed, skipped, pending] = await Promise.all([
-    countIn('signals.received', null),
-    countIn('signals.tradeable', ['parsed', 'executed', 'failed']),
-    countIn('signals.executed', ['executed']),
-    countIn('signals.failed', ['failed']),
-    countIn('signals.skipped', ['skipped']),
-    countIn('signals.pending', ['pending']),
-  ]);
+  const [received, tradeable, executed, failed, skipped, pending] = await countsP;
 
   // Oldest pending signal.
-  interface PendingRow { created_at: string }
-  const oldestPendingRows = await fetchRows<PendingRow>(
-    'signals.pending.oldest',
-    unreadableSources,
-    () => authSupabase.from('signals').select('created_at').eq('status', 'pending').order('created_at', { ascending: true }).limit(1),
-  );
+  const oldestPendingRows = await oldestPendingP;
   const oldestPendingMinutes = oldestPendingRows?.[0]?.created_at
     ? Math.max(0, (serverNowMs - Date.parse(oldestPendingRows[0].created_at)) / 60_000)
     : null;
@@ -472,57 +639,17 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
   // --- Stuck-parsed alarm inputs: parsed signals WITHIN the selected window
   // (not all history) older than grace, excluding range-parked signals
   // (claims are released by design there).
-  const graceCutoffIso = new Date(serverNowMs - HEALTH_THRESHOLDS.stuckParsedGraceMin * 60_000).toISOString();
-  interface ParsedOldRow { id: string }
-  const parsedOldRows = await fetchRows<ParsedOldRow>(
-    'signals.parsed.old',
-    unreadableSources,
-    () => authSupabase
-      .from('signals')
-      .select('id')
-      .eq('status', 'parsed')
-      .gte('created_at', sinceIso)
-      .lte('created_at', graceCutoffIso)
-      .order('created_at', { ascending: true })
-      .limit(PARSED_OLDEST_CAP),
-  );
-  interface WaitRow { signal_id: string }
-  const waitingRows = await fetchRows<WaitRow>(
-    'signal_range_entry_waits',
-    unreadableSources,
-    () => authSupabase.from('signal_range_entry_waits').select('signal_id').eq('status', 'waiting').limit(RANGE_WAITS_CAP),
-  );
+  const parsedOldRows = await parsedOldP;
+  const waitingRows = await waitingP;
   const waitingIds = new Set((waitingRows ?? []).map(w => w.signal_id));
   const stuckParsedCount = (parsedOldRows ?? []).filter(r => !waitingIds.has(r.id)).length;
 
   // --- Dispatch attempts: distinct claim signal_ids created in window.
-  interface ClaimRow { signal_id: string }
-  const claims = await fetchRows<ClaimRow>(
-    'signal_broker_dispatch_claims',
-    unreadableSources,
-    () => authSupabase
-      .from('signal_broker_dispatch_claims')
-      .select('signal_id, created_at')
-      .gte('created_at', sinceIso)
-      .order('created_at', { ascending: true })
-      .limit(CLAIMS_CAP),
-    CLAIMS_CAP,
-  );
+  const claims = await claimsP;
   const dispatchedAttempts = new Set((claims ?? []).map(c => c.signal_id)).size;
 
   // --- Latency samples from signals.pipeline_ts (listener phase only).
-  interface TsRow { pipeline_ts: unknown }
-  const tsRows = await fetchRows<TsRow>(
-    'signals.latency-sample',
-    unreadableSources,
-    () => authSupabase
-      .from('signals')
-      .select('pipeline_ts')
-      .gte('created_at', sinceIso)
-      .order('created_at', { ascending: false })
-      .limit(SIGNALS_SAMPLE_CAP),
-    SIGNALS_SAMPLE_CAP,
-  );
+  const tsRows = await tsRowsP;
   const parseSamples: number[] = [];
   const handoffSamples: number[] = [];
   for (const row of tsRows ?? []) {
@@ -537,18 +664,7 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
   handoffSamples.sort((a, b) => a - b);
 
   // --- End-to-end latency from pipeline_summary log rows.
-  interface SummaryRow { total_ms: string | null }
-  const summaryRows = await fetchRows<SummaryRow>(
-    'trade_execution_logs.pipeline_summary',
-    unreadableSources,
-    () => authSupabase
-      .from('trade_execution_logs')
-      .select('total_ms:request_payload->>total_ms')
-      .eq('action', 'pipeline_summary')
-      .gte('created_at', sinceIso)
-      .limit(PIPELINE_SUMMARY_CAP),
-    PIPELINE_SUMMARY_CAP,
-  );
+  const summaryRows = await summaryRowsP;
   const e2eSamples = (summaryRows ?? [])
     .map(r => Number(r.total_ms))
     .filter(v => Number.isFinite(v) && v >= 0)
@@ -561,18 +677,7 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
   ];
 
   // --- Hourly trend buckets for the chart (bounded tiny-column fetch).
-  interface TrendRow { status: string | null; created_at: string }
-  const trendRows = await fetchRows<TrendRow>(
-    'signals.trend',
-    unreadableSources,
-    () => authSupabase
-      .from('signals')
-      .select('status,created_at')
-      .gte('created_at', sinceIso)
-      .order('created_at', { ascending: false })
-      .limit(3000),
-    3000,
-  );
+  const trendRows = await trendRowsP;
   const bucketMs = windowHours <= 1 ? 5 * 60_000 : windowHours <= 6 ? 30 * 60_000 : 60 * 60_000;
   const trend: TrendPoint[] = [];
   if (Array.isArray(trendRows)) {
@@ -623,22 +728,12 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
   };
 
   // --- Telegram panel.
-  interface SessionRow { user_id: string }
-  const sessions = await fetchRows<SessionRow>(
-    'telegram_sessions',
-    unreadableSources,
-    () => authSupabase.from('telegram_sessions').select('user_id').limit(SESSIONS_CAP),
-    SESSIONS_CAP,
-  );
+  const sessions = await sessionsP;
   const sessionUserIds = new Set((sessions ?? []).map(s => s.user_id));
-  // Auth-pending is a worker-only table with no admin SELECT policy, so this is
-  // best-effort: a failure must NOT count as an unreadable source (that would
-  // permanently force the "cannot determine" verdict). It just shows 0.
+  // Auth-pending is best-effort (worker-only table, no admin SELECT policy):
+  // failure must NOT count as an unreadable source — it just shows 0.
   let authPendingCount = 0;
-  const authPendingRes = await authSupabase
-    .from('telegram_auth_pending')
-    .select('user_id', { count: 'exact', head: true })
-    .gt('expires_at', nowIso);
+  const authPendingRes = await authPendingP;
   if (!authPendingRes.error) authPendingCount = authPendingRes.count ?? 0;
 
   // --- Live-connectivity truth signal (copier_listener_health).
@@ -647,21 +742,7 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
   // Fall back to the weaker lease signal when the table is empty or unreadable
   // (e.g. before the health writer is deployed) so we never invent an outage
   // from missing data.
-  interface HealthRow {
-    user_id: string;
-    listener_status: string | null;
-    mtproto_connected: boolean | null;
-    worker_ownership_status: string | null;
-    updated_at: string | null;
-    last_successful_probe_at: string | null;
-    freshness_threshold_ms: number | null;
-  }
-  const healthRows = await fetchRows<HealthRow>(
-    'listener_health',
-    unreadableSources,
-    () => authSupabase.from('copier_listener_health')
-      .select('user_id, listener_status, mtproto_connected, worker_ownership_status, updated_at, last_successful_probe_at, freshness_threshold_ms'),
-  );
+  const healthRows = await healthRowsP;
   const healthLive = new Set<string>();
   const healthReportingUsers = new Set<string>();
   for (const h of healthRows ?? []) {
@@ -690,6 +771,54 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
       : [...listeningUserIds].filter(u => sessionUserIds.has(u));
   const listeningLeases = [...listeningUserIds].filter(u => sessionUserIds.has(u)).length;
   const linkedNotListeningUsers = [...sessionUserIds].filter(u => !new Set(effectiveListening).has(u));
+
+  // --- Per-account root cause for the not-listening set (deep telegram).
+  // Joins the lease table (who owns the polling loop, still fresh or expired),
+  // copier_listener_health (connected? MTProto up? stale?) and the user's own
+  // state (subscription, copier paused) so the diagnosis can say WHY each
+  // account is silent instead of guessing. Subscription/profile reads are
+  // best-effort like authPending: failure yields null fields, never an
+  // unreadable source.
+  const notListeningDetail: NotListeningDetail[] = [];
+  const detailIds = linkedNotListeningUsers.slice(0, NOT_LISTENING_DETAIL_CAP);
+  if (detailIds.length > 0) {
+    const leaseByUser = new Map<string, LeaseRow>();
+    for (const l of leases ?? []) {
+      const prev = leaseByUser.get(l.user_id);
+      const isActive = l.expires_at != null && l.expires_at > nowIso;
+      const prevActive = prev != null && prev.expires_at != null && prev.expires_at > nowIso;
+      if (!prev || (isActive && !prevActive) || (isActive === prevActive && (l.updated_at ?? '') > (prev.updated_at ?? ''))) {
+        leaseByUser.set(l.user_id, l);
+      }
+    }
+    const healthByUser = new Map((healthRows ?? []).map(h => [h.user_id, h]));
+    const [subsRes, profRes] = await Promise.all([
+      authSupabase.from('subscriptions').select('user_id, status').in('user_id', detailIds),
+      authSupabase.from('user_profiles').select('user_id, copier_paused').in('user_id', detailIds),
+    ]);
+    const subByUser = new Map((subsRes.data ?? []).map((s: { user_id: string; status: string }) => [s.user_id, s.status]));
+    const profByUser = new Map((profRes.data ?? []).map((p: { user_id: string; copier_paused: boolean | null }) => [p.user_id, p.copier_paused]));
+    for (const uid of detailIds) {
+      const lease = leaseByUser.get(uid);
+      const health = healthByUser.get(uid);
+      notListeningDetail.push({
+        userId: uid,
+        hasActiveLease: lease != null && lease.expires_at != null && lease.expires_at > nowIso,
+        leaseWorker: lease?.worker_id ?? null,
+        leaseShard: lease?.shard_id ?? null,
+        leaseExpiresInSec: lease?.expires_at != null ? Math.round((Date.parse(lease.expires_at) - serverNowMs) / 1000) : null,
+        leaseAgeSec: lease?.updated_at ? Math.round((serverNowMs - Date.parse(lease.updated_at)) / 1000) : null,
+        listenerStatus: health?.listener_status ?? null,
+        mtprotoConnected: health?.mtproto_connected ?? null,
+        ownershipStatus: health?.worker_ownership_status ?? null,
+        healthRowAgeSec: health?.updated_at ? Math.round((serverNowMs - Date.parse(health.updated_at)) / 1000) : null,
+        lastProbeAgeSec: health?.last_successful_probe_at ? Math.round((serverNowMs - Date.parse(health.last_successful_probe_at)) / 1000) : null,
+        subStatus: subByUser.get(uid) ?? null,
+        copierPaused: profByUser.get(uid) ?? null,
+      });
+    }
+  }
+
   const telegram: TelegramPanel = {
     reliable: sessions != null && activeLeases != null,
     linked: sessionUserIds.size,
@@ -699,23 +828,13 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
     truthful: useHealth,
     authPending: authPendingCount,
     linkedNotListeningUsers,
+    listeningUserIds: effectiveListening.slice(0, NOT_LISTENING_DETAIL_CAP),
+    notListeningDetail,
   };
 
   // --- Broker connection mix.
-  const [connected, recovering, errored] = await Promise.all([
-    headCount('broker_accounts.connected', unreadableSources,
-      () => authSupabase.from('broker_accounts').select('id', { count: 'exact', head: true }).eq('connection_status', 'connected')),
-    headCount('broker_accounts.recovering', unreadableSources,
-      () => authSupabase.from('broker_accounts').select('id', { count: 'exact', head: true }).eq('connection_status', 'recovering')),
-    headCount('broker_accounts.error', unreadableSources,
-      () => authSupabase.from('broker_accounts').select('id', { count: 'exact', head: true }).eq('connection_status', 'error')),
-  ]);
-  interface BrokerErrRow { connection_error_kind: string | null }
-  const brokerErrRows = await fetchRows<BrokerErrRow>(
-    'broker_accounts.errors',
-    unreadableSources,
-    () => authSupabase.from('broker_accounts').select('connection_error_kind').eq('connection_status', 'error').limit(BROKER_ERROR_KINDS_CAP),
-  );
+  const [connected, recovering, errored] = await brokerCountsP;
+  const brokerErrRows = await brokerErrRowsP;
   const kindMap = new Map<string, number>();
   for (const r of brokerErrRows ?? []) {
     const kind = r.connection_error_kind || 'unspecified';
@@ -733,11 +852,7 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
   };
 
   // --- Dead letters.
-  const deadLettersOpen = (await headCount(
-    'signal_queue_dead_letters',
-    unreadableSources,
-    () => authSupabase.from('signal_queue_dead_letters').select('id', { count: 'exact', head: true }).is('replayed_at', null),
-  )) ?? 0;
+  const deadLettersOpen = (await deadLettersP) ?? 0;
 
   // --- Execution failure buckets.
   interface ExecLogRow {
@@ -752,17 +867,7 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
     response_payload: unknown;
     created_at: string | null;
   }
-  const execLogs = await fetchRows<ExecLogRow>(
-    'trade_execution_logs.failures',
-    unreadableSources,
-    () => authSupabase
-      .from('trade_execution_logs')
-      .select('id, user_id, status, action, error_message, broker_account_id, signal_id, request_payload, response_payload, created_at')
-      .eq('status', 'failed')
-      .gte('created_at', sinceIso)
-      .limit(3000),
-    3000,
-  );
+  const execLogs = await execLogsP;
   const bucketAgg = new Map<string, { count: number; users: Set<string>; rows: ErrorBucketRow[] }>();
   for (const log of execLogs ?? []) {
     // Worker writes reason_code into request_payload (not response_payload).
@@ -794,14 +899,7 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
     return { bucket, reasonCode, count: agg.count, distinctUsers: agg.users.size, escalated: false, rows: agg.rows };
   });
 
-  const baselineSince = new Date(serverNowMs - (7 * 24 + windowHours) * 3_600_000).toISOString();
-  const baselineUntil = new Date(serverNowMs - windowHours * 3_600_000).toISOString();
-  const baselineRes = await authSupabase
-    .from('trade_execution_logs')
-    .select('status', { count: 'exact', head: true })
-    .eq('status', 'failed')
-    .gte('created_at', baselineSince)
-    .lt('created_at', baselineUntil);
+  const baselineRes = await baselineP;
   if (baselineRes.error) unreadableSources.push(`execution baseline: ${baselineRes.error.message}`);
   const baselineTotal = baselineRes.count ?? 0;
   const baselinePerWindow = baselineTotal / ((7 * 24) / windowHours);
@@ -817,7 +915,7 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
 
   const dbReachable = unreadableSources.length === 0;
 
-  const railway = await fetchRailwayHealth(windowHours);
+  const railway = await railwayP;
 
   const checks = buildChecks({
     unreadableSources, serverNowMs, activeLeases: activeLeases.length,

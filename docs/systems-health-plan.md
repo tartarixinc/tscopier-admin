@@ -177,11 +177,18 @@ Known env gap (not a code bug): `broker_accounts.connection_error_kind` missing 
 STAGING (migration drift) — broker error-kinds list renders only on prod until that
 migration is applied to staging.
 
-## Deploy status
-- Railway storm fix: origin/staging + upstream staging+dev (fe0bd785). Railway verified
-  healthy both envs (no storm, 0 rate limits). PROD still on pre-fix code — must reach
-  prod (gated on staging validation).
-- Admin cockpit + edge function: built + verified locally; NOT deployed. Deploy requires
-  a working Supabase CLI token (`supabase login` — current ~/.supabase/access-token is
-  Unauthorized) to apply index migration to staging + deploy systems-health-railway fn.
-- No commits yet (per user).
+## Deploy status (updated 2026-10-14)
+- Commits exist on `feat/user-detail-enhancements`: `e9ce213` (initial page), `fcdda28`
+  (prod corrections), `f02bc40` (connection map + alerts console + monitoring overlay +
+  admin read-policy migration for probe/alert tables). The branch is pushed to origin;
+  Netlify deploys from `main` after merge.
+- Index migrations from this plan live in the TSCopier repo:
+  `supabase/migrations/20260825130000_systems_health_indexes.sql` (apply staging first).
+- The admin read-policy migration `20261012120000_admin_read_monitoring_tables.sql` must
+  be applied to the target Supabase project before the alerts/probe panels read data.
+- Railway full deploy status remains unconnected: it needs a Railway API token in the
+  `systems-health-railway` edge function (TSCopier repo). The page derives the Railway
+  box state from worker heartbeats/leases until then and says so honestly.
+- AI assistant (`systems-health-assistant` edge function in this repo, added 2026-10-14):
+  built and verified locally; requires `OPENAI_API_KEY` on the admin Supabase project
+  (already used by `trade-pipeline-explainer`) and a Supabase CLI deploy.

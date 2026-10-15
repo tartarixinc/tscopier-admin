@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
+import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { authSupabase as adminSupabase } from '../lib/adminSupabase';
 import { formatDate } from '../lib/formatters';
 import { Card } from '../components/ui/Card';
 import { UserLink } from '../components/UserLink';
-import { ArrowLeft, AlertTriangle, User, Sparkles } from 'lucide-react';
+import { ArrowLeft, AlertTriangle, Sparkles } from 'lucide-react';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -133,10 +135,20 @@ export function AssistantThreadViewPage() {
 function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
   const [expandedTools, setExpandedTools] = useState<Record<number, boolean>>({});
+  const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
 
   const toggleTool = (i: number) => {
     setExpandedTools(prev => ({ ...prev, [i]: !prev[i] }));
   };
+
+  const closeLightbox = useCallback(() => setLightboxIdx(null), []);
+
+  useEffect(() => {
+    if (lightboxIdx === null) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeLightbox(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [lightboxIdx, closeLightbox]);
 
   return (
     <div className={`flex gap-3 px-4 py-4 ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -154,7 +166,11 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             ? 'bg-blue-50 text-blue-900 dark:bg-blue-950/60 dark:text-blue-100 border border-blue-200 dark:border-blue-800'
             : 'bg-emerald-50 text-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-100 border border-emerald-200 dark:border-emerald-800'
         }`}>
-          {renderContent(message.content)}
+          {isUser ? renderContent(message.content) : (
+            <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-pre:my-2 prose-pre:bg-slate-900 prose-pre:text-slate-100 prose-code:text-[0.85em] prose-code:bg-slate-100 dark:prose-code:bg-slate-800 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-li:my-0">
+              <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>
+            </div>
+          )}
         </div>
 
         {message.images && message.images.length > 0 && (
@@ -164,9 +180,33 @@ function MessageBubble({ message }: { message: ChatMessage }) {
                 key={i}
                 src={img}
                 alt={`Image ${i + 1}`}
-                className="max-w-[200px] max-h-[150px] rounded-lg border border-slate-200 dark:border-slate-700 object-cover"
+                className="max-w-[200px] max-h-[150px] rounded-lg border border-slate-200 dark:border-slate-700 object-cover cursor-pointer hover:opacity-80 transition-opacity"
+                onClick={() => setLightboxIdx(i)}
+                onError={(e) => {
+                  (e.target as HTMLImageElement).style.display = 'none';
+                }}
               />
             ))}
+          </div>
+        )}
+
+        {lightboxIdx !== null && message.images && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm"
+            onClick={() => setLightboxIdx(null)}
+          >
+            <button
+              onClick={() => setLightboxIdx(null)}
+              className="absolute top-4 right-4 p-2 rounded-full text-white/80 hover:text-white hover:bg-white/10 transition-colors"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+            </button>
+            <img
+              src={message.images[lightboxIdx]}
+              alt={`Image ${lightboxIdx + 1}`}
+              className="max-w-[90vw] max-h-[85vh] rounded-lg object-contain shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            />
           </div>
         )}
 
