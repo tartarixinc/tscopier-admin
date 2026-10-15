@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   applyHysteresis,
@@ -17,6 +17,16 @@ import {
   type UserHealth,
 } from '../lib/systemHealth';
 import { ENVIRONMENTS, getAdminEnv } from '../lib/environment';
+import {
+  MAP_KEY_TO_CHECK,
+  MAP_KEY_TO_PROBE,
+  MAP_NODE_COPY,
+  ORGAN_COPY,
+  agoFmt,
+  probeHealth,
+  railwayBox,
+  type OrganId,
+} from '../lib/healthMapCopy';
 import { authSupabase, fetchDisplayNames } from '../lib/adminSupabase';
 import {
   acknowledgeAlert,
@@ -28,6 +38,7 @@ import {
 } from '../lib/monitoringOverlay';
 import { UserLink } from '../components/UserLink';
 import { JsonViewer } from '../components/JsonViewer';
+import { HealthAssistantPanel } from '../components/HealthAssistantPanel';
 import { ChevronDown, ChevronRight, Crosshair, User as UserIcon, Wifi, Activity, AlertTriangle, Check } from 'lucide-react';
 
 const REFRESH_MS = 30_000;
@@ -68,12 +79,13 @@ function fmtDur(ms: number | null): string {
 // Generic modal shell — Escape closes, backdrop click closes.
 // ---------------------------------------------------------------------------
 
-function ModalShell({ title, dotColor, onClose, children, wide }: {
+function ModalShell({ title, dotColor, onClose, children, wide, labelledBy }: {
   title: React.ReactNode;
   dotColor: string;
   onClose: () => void;
   children: React.ReactNode;
   wide?: boolean;
+  labelledBy?: string;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -82,13 +94,13 @@ function ModalShell({ title, dotColor, onClose, children, wide }: {
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby={labelledBy}>
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
       <div className={`relative w-full ${wide ? 'max-w-4xl' : 'max-w-2xl'} max-h-[85vh] overflow-y-auto card p-6 shadow-xl`}>
         <div className="flex items-start justify-between gap-4 mb-3">
           <div className="flex items-center gap-2.5">
             <span className={`h-3 w-3 rounded-full ${dotColor}`} />
-            <h3 className="text-base font-bold">{title}</h3>
+            <h3 id={labelledBy} className="text-base font-bold">{title}</h3>
           </div>
           <button onClick={onClose} aria-label="Close" className="text-slate-400 hover:text-slate-600 text-xl leading-none">×</button>
         </div>
@@ -273,28 +285,8 @@ function StageModal({
 // ---------------------------------------------------------------------------
 // System organs — the components that power the machine. Each opens its own
 // modal fed entirely from the report (no extra queries needed).
+// Plain-English organ copy lives in lib/healthMapCopy.ts.
 // ---------------------------------------------------------------------------
-
-type OrganId = 'workers' | 'telegram' | 'brokers' | 'railway';
-
-const ORGAN_COPY: Record<OrganId, { label: string; what: string }> = {
-  workers: {
-    label: 'Workers',
-    what: 'Listener workers hold a renewable lease (≈45s TTL) for every Telegram account they actively poll. A live lease proves a worker is alive and owns that user\'s listening loop.',
-  },
-  telegram: {
-    label: 'Telegram link',
-    what: 'A linked session means the user connected their Telegram account once. Listening now means a worker is actively polling that account at this moment.',
-  },
-  brokers: {
-    label: 'Broker links',
-    what: 'Each user connects broker accounts through which trades execute. Recovering means auto-reconnect is in progress; error needs the user to reconnect.',
-  },
-  railway: {
-    label: 'Worker process logs',
-    what: 'Live Railway deployment logs watched for worker crashes, realtime subscription churn, and log rate-limits — the exact pattern of the Aug 25 retry storm.',
-  },
-};
 
 function organState(checks: CheckResult[], id: OrganId): CheckResult | undefined {
   return checks.find(c => c.id === id);
@@ -470,14 +462,6 @@ function railwayFmt(n: number): string {
 // in place through the audited admin-mutate action.
 // ---------------------------------------------------------------------------
 
-function agoFmt(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return '—';
-  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
-  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
-  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h`;
-  return `${Math.round(ms / 86_400_000)}d`;
-}
-
 const SEVERITY_PILL: Record<string, string> = {
   critical: 'bg-error-100 text-error-700 dark:bg-error-900/50 dark:text-error-300',
   warning: 'bg-warning-100 text-warning-700 dark:bg-warning-900/50 dark:text-warning-300',
@@ -550,20 +534,130 @@ interface MapNodeDef {
   value: string;
   state: HealthState;
   title?: string;
+  /** Plain-English: what this component is. */
+  what: string;
+  /** Plain-English: what breaks for users if this stays down. */
+  impact: string;
+  /** Alert rule codes whose open events belong to this component. */
+  rules: string[];
 }
 
-function MapNode({ node }: { node: MapNodeDef }) {
+function MapNode({ node, onSelect }: { node: MapNodeDef; onSelect: (n: MapNodeDef) => void }) {
   return (
-    <div
-      title={node.title}
-      className={`shrink-0 w-[124px] rounded-lg border px-2.5 py-2 text-center ${NODE_STATE_STYLE[node.state]}`}
+    <button
+      type="button"
+      title={node.title ? `${node.title} — click for details` : 'Click for details'}
+      onClick={() => onSelect(node)}
+      className={`shrink-0 w-[124px] rounded-lg border px-2.5 py-2 text-center cursor-pointer transition-all hover:-translate-y-px hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-400 ${NODE_STATE_STYLE[node.state]}`}
     >
       <div className="flex items-center justify-center gap-1.5">
         <span className={`h-2 w-2 rounded-full shrink-0 ${STATE_DOT[node.state]}`} />
         <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300 truncate">{node.label}</span>
       </div>
       <p className="mt-0.5 text-sm font-bold leading-tight truncate">{node.value}</p>
-    </div>
+    </button>
+  );
+}
+
+function MapNodeModal({ node, probe, check, report, alerts, alertsReadable, nowTick, onClose }: {
+  node: MapNodeDef;
+  probe: ProbeTargetSummary | undefined;
+  check: CheckResult | undefined;
+  report: Report;
+  alerts: OpenAlertEvent[];
+  alertsReadable: boolean;
+  nowTick: number;
+  onClose: () => void;
+}) {
+  const titleId = useId();
+  const related = alerts.filter(a => node.rules.includes(a.rule_code));
+  const showRailwayLogs = node.key === 'railway' && report.railway.available;
+
+  return (
+    <ModalShell title={node.label} dotColor={STATE_DOT[node.state]} onClose={onClose} labelledBy={titleId}>
+      <p className={`text-lg font-bold mb-3 ${node.state === 'ok' ? 'text-success-700 dark:text-success-400' : node.state === 'fail' ? 'text-error-700 dark:text-error-400' : node.state === 'warn' ? 'text-warning-700 dark:text-warning-400' : 'text-slate-500'}`}>
+        Right now: {node.value}
+      </p>
+
+      <section className="mb-4">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1">What this is</h4>
+        <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-300">{node.what}</p>
+      </section>
+
+      {(check?.summary ?? node.title) && (
+        <section className="mb-4">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1">Current status</h4>
+          <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-300">{check?.summary ?? node.title}</p>
+          {check?.detail && <p className="mt-1 text-xs leading-relaxed text-slate-400">{check.detail}</p>}
+        </section>
+      )}
+
+      {probe && (
+        <section className="mb-4">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1">Probe metrics</h4>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-slate-600 dark:text-slate-300">
+            <span>State</span><span className="font-semibold">{probe.state}{probe.state === 'up' && probe.latencyMs != null ? ` (${probe.latencyMs}ms)` : ''}</span>
+            <span>Last report</span><span>{probe.lastReportAt ? `${agoFmt(nowTick - Date.parse(probe.lastReportAt))} ago` : 'never'}</span>
+            <span>Uptime (24h)</span><span>{probe.uptime24hPct != null ? `${probe.uptime24hPct}%` : 'no samples yet'}</span>
+            <span>p95 latency</span><span>{probe.p95LatencyMs != null ? `${probe.p95LatencyMs}ms` : '—'}</span>
+            {probe.consecutiveFailures > 0 && (<><span>Consecutive failures</span><span className="font-semibold text-error-600 dark:text-error-400">{probe.consecutiveFailures}</span></>)}
+            {probe.downSince && (<><span>Down since</span><span className="font-semibold text-error-600 dark:text-error-400">{agoFmt(nowTick - Date.parse(probe.downSince))} ago</span></>)}
+            {probe.detail && (<><span>Detail</span><span>{probe.detail}</span></>)}
+          </div>
+          {probe.recentEvents.length > 0 && (
+            <table className="mt-2 w-full text-xs text-slate-500 dark:text-slate-400">
+              <tbody>
+                {probe.recentEvents.slice(0, 4).map((e, i) => (
+                  <tr key={`${e.created_at}-${i}`}>
+                    <td className="py-0.5 pr-2 whitespace-nowrap">{new Date(e.created_at).toLocaleTimeString()}</td>
+                    <td className={`py-0.5 pr-2 font-semibold ${e.state === 'up' ? 'text-success-600 dark:text-success-400' : 'text-error-600 dark:text-error-400'}`}>{e.state}</td>
+                    <td className="py-0.5">{e.latency_ms != null ? `${e.latency_ms}ms` : ''}{e.detail ? ` — ${e.detail}` : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      )}
+
+      {showRailwayLogs && (
+        <section className="mb-4">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1">Worker log scan (24h)</h4>
+          <p className="text-sm text-slate-600 dark:text-slate-300">
+            Worker fatals: <b>{railwayFmt(report.railway.workerFatal)}</b> · Uncaught exceptions: <b>{railwayFmt(report.railway.uncaughtExceptions)}</b> · Realtime failures: <b>{railwayFmt(report.railway.realtimeFailures)}</b>
+          </p>
+        </section>
+      )}
+
+      <section className="mb-4">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1">Open alerts for this component</h4>
+        {!alertsReadable ? (
+          <p className="text-sm text-warning-700 dark:text-warning-400">Alert data unavailable — check the Alerts console.</p>
+        ) : related.length === 0 ? (
+          <p className="text-sm text-slate-400">None in the latest alert snapshot.</p>
+        ) : (
+          <ul className="space-y-2">
+            {related.map(a => (
+              <li key={a.id} className={`rounded-md border px-3 py-2 text-sm ${a.severity === 'critical' ? 'border-error-300 bg-error-50 dark:bg-error-900/30 dark:border-error-800' : a.severity === 'warning' ? 'border-warning-300 bg-warning-50 dark:bg-warning-900/30 dark:border-warning-800' : 'border-slate-200 dark:border-slate-700'}`}>
+                <span className="font-semibold">{a.alert_rules?.name ?? a.rule_code}</span>
+                <span className="ml-2 text-[10px] uppercase tracking-wide text-slate-400">{a.severity} · {a.state}</span>
+                <p className="mt-0.5 text-xs leading-snug text-slate-600 dark:text-slate-300">{a.message}</p>
+                <p className="mt-0.5 text-[11px] text-slate-400">
+                  Fired {new Date(a.created_at).toLocaleString()}
+                  {a.email_sent_at ? ' · email sent' : ' · email not sent yet'}
+                  {a.acknowledged_at ? ' · acknowledged' : ''}
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section>
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1">If this stays down</h4>
+        <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-300">{node.impact}</p>
+      </section>
+    </ModalShell>
   );
 }
 
@@ -575,41 +669,13 @@ function MapArrow({ label }: { label?: string }) {
   );
 }
 
-const BRIDGE_STALE_MS = 90_000;
-const HEARTBEAT_STALE_MS = 180_000;
-
-function probeHealth(p: ProbeTargetSummary | undefined, nowTick: number): { state: HealthState; value: string; title: string } {
-  if (!p) return { state: 'unknown', value: '—', title: 'No probe data yet — the target may not be deployed, or the worker probe is not running.' };
-  const staleAfter = p.target.startsWith('bridge_') ? BRIDGE_STALE_MS : HEARTBEAT_STALE_MS;
-  const age = p.lastReportAt ? nowTick - Date.parse(p.lastReportAt) : Number.NaN;
-  if (p.state === 'down') {
-    const downFor = p.downSince ? nowTick - Date.parse(p.downSince) : null;
-    return {
-      state: 'fail',
-      value: downFor != null ? `down ${agoFmt(downFor)}` : 'down',
-      title: p.detail ?? 'Health check failing',
-    };
-  }
-  if (p.state === 'up' && Number.isFinite(age) && age > staleAfter) {
-    return {
-      state: 'warn',
-      value: `stale ${agoFmt(age)}`,
-      title: `Last report ${agoFmt(age)} ago — unknown must not be treated as healthy.`,
-    };
-  }
-  if (p.state === 'unknown') return { state: 'unknown', value: 'unknown', title: p.detail ?? '' };
-  return {
-    state: 'ok',
-    value: p.latencyMs != null ? `${p.latencyMs}ms` : 'up',
-    title: `Last report ${agoFmt(age)} ago`,
-  };
-}
-
 function ConnectionMap({ report, overlay, nowTick }: {
   report: Report;
   overlay: MonitoringOverlay | null;
   nowTick: number;
 }) {
+  const [selected, setSelected] = useState<MapNodeDef | null>(null);
+  const closeSelected = useCallback(() => setSelected(null), []);
   const check = (id: string) => report.checks.find(c => c.id === id);
   const probe = (t: string) => overlay?.probes.find(p => p.target === t);
 
@@ -618,7 +684,6 @@ function ConnectionMap({ report, overlay, nowTick }: {
   const queue = check('queue');
   const copying = check('copying');
   const brokers = check('brokers');
-  const railway = check('railway');
 
   const tradeWorker = probeHealth(probe('worker_trade'), nowTick);
   const bridgeMt5 = probeHealth(probe('bridge_mt5'), nowTick);
@@ -627,36 +692,36 @@ function ConnectionMap({ report, overlay, nowTick }: {
 
   const chain: MapNodeDef[] = [
     {
+      ...MAP_NODE_COPY['telegram-src'],
       key: 'telegram-src',
-      label: 'Telegram',
       value: `${report.telegram.listeningNow}/${report.telegram.linked}`,
       state: telegram?.state ?? 'unknown',
       title: telegram?.summary,
     },
     {
+      ...MAP_NODE_COPY.listeners,
       key: 'listeners',
-      label: 'Listeners',
       value: String(report.activeLeases),
       state: workers?.state ?? 'unknown',
       title: workers?.summary,
     },
     {
+      ...MAP_NODE_COPY.signals,
       key: 'signals',
-      label: 'Signals',
       value: report.flow.reliable ? report.flow.received.toLocaleString() : '—',
       state: copying?.state ?? 'unknown',
       title: copying?.summary,
     },
     {
+      ...MAP_NODE_COPY.queue,
       key: 'queue',
-      label: 'Queue',
       value: String(report.flow.pendingInFlight),
       state: queue?.state ?? 'unknown',
       title: queue?.summary,
     },
     {
+      ...MAP_NODE_COPY['trade-workers'],
       key: 'trade-workers',
-      label: 'Trade workers',
       value: tradeWorker.value,
       state: tradeWorker.state,
       title: tradeWorker.title,
@@ -664,55 +729,68 @@ function ConnectionMap({ report, overlay, nowTick }: {
   ];
 
   const branch: MapNodeDef[] = [
-    { key: 'bridge-mt5', label: 'Bridge MT5', value: bridgeMt5.value, state: bridgeMt5.state, title: bridgeMt5.title },
-    { key: 'bridge-mt4', label: 'Bridge MT4', value: bridgeMt4.value, state: bridgeMt4.state, title: bridgeMt4.title },
     {
-      key: 'fxsocket',
-      label: 'FxSocket',
-      value: `${report.brokers.connected} up`,
-      state: brokers?.state ?? 'unknown',
-      title: brokers?.summary,
+      ...MAP_NODE_COPY['bridge-mt5'],
+      key: 'bridge-mt5',
+      value: bridgeMt5.value,
+      state: bridgeMt5.state,
+      title: bridgeMt5.title,
+    },
+    {
+      ...MAP_NODE_COPY['bridge-mt4'],
+      key: 'bridge-mt4',
+      value: bridgeMt4.value,
+      state: bridgeMt4.state,
+      title: bridgeMt4.title,
     },
   ];
 
   const tail: MapNodeDef = {
+    ...MAP_NODE_COPY['broker-accounts'],
     key: 'broker-accounts',
-    label: 'Broker accounts',
     value: String(report.brokers.connected + report.brokers.recovering + report.brokers.error),
     state: brokers?.state ?? 'unknown',
     title: brokers?.summary,
   };
 
+  // Railway hosts the listener and trade-worker services. Their liveness is
+  // already measured (heartbeat probe + listener leases), so the box derives
+  // solely from those — one shared derivation (lib/healthMapCopy) for both
+  // this map and the assistant snapshot, so they can never contradict.
+  const railBox = railwayBox(tradeWorker.state, workers?.state);
   const support: MapNodeDef[] = [
     {
+      ...MAP_NODE_COPY.database,
       key: 'database',
-      label: 'Database',
       value: report.dbReachable ? 'reachable' : 'DOWN',
       state: report.dbReachable ? 'ok' : 'fail',
       title: `Clock offset vs DB: ${report.clockOffsetMs >= 0 ? '+' : ''}${Math.round(report.clockOffsetMs / 1000)}s`,
     },
     {
+      ...MAP_NODE_COPY.railway,
       key: 'railway',
-      label: 'Railway',
-      value: report.railway.available ? railwayStateShort(report.railway.state) : '—',
-      state: railway?.state ?? 'unknown',
-      title: railway?.summary,
+      value: railBox.value,
+      state: railBox.state,
+      title: railBox.title,
     },
     {
+      ...MAP_NODE_COPY.scheduler,
       key: 'scheduler',
-      label: 'Scheduler',
       value: evaluator.value,
       state: evaluator.state,
       title: evaluator.title || 'Cron-driven alert evaluator, runs every minute',
     },
     {
+      ...MAP_NODE_COPY.backtest,
       key: 'backtest',
-      label: 'Backtest',
       value: 'on demand',
       state: 'unknown',
       title: 'Backtest runs are triggered manually from the Backtests page — idle is normal.',
     },
   ];
+
+  const allNodes = [...chain, ...branch, tail, ...support];
+  const selectedNode = selected ? allNodes.find(n => n.key === selected.key) ?? selected : null;
 
   return (
     <div className="card p-5 space-y-4">
@@ -720,7 +798,7 @@ function ConnectionMap({ report, overlay, nowTick }: {
         <h2 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
           Connection map — every component and how they connect
         </h2>
-        <span className="text-xs text-slate-400">hover a box for the full status line</span>
+        <span className="text-xs text-slate-400">click any box for what it is, live status, and open issues</span>
       </div>
 
       <div className="overflow-x-auto pb-1">
@@ -728,7 +806,7 @@ function ConnectionMap({ report, overlay, nowTick }: {
           {chain.map((node, i) => (
             <div key={node.key} className="flex items-center gap-2">
               {i > 0 && <MapArrow />}
-              <MapNode node={node} />
+              <MapNode node={node} onSelect={setSelected} />
             </div>
           ))}
         </div>
@@ -736,17 +814,17 @@ function ConnectionMap({ report, overlay, nowTick }: {
         <div className="inline-flex items-center gap-2 min-w-max mt-2 pl-6">
           <span className="text-slate-300 dark:text-slate-600 text-xs select-none">↳ executes through</span>
           {branch.map(node => (
-            <MapNode key={node.key} node={node} />
+            <MapNode key={node.key} node={node} onSelect={setSelected} />
           ))}
           <MapArrow />
-          <MapNode node={tail} />
+          <MapNode node={tail} onSelect={setSelected} />
         </div>
 
         <div className="mt-3 pt-3 border-t border-dashed border-slate-200 dark:border-slate-700">
           <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Supporting systems</p>
           <div className="inline-flex items-center gap-2 flex-wrap">
             {support.map(node => (
-              <MapNode key={node.key} node={node} />
+              <MapNode key={node.key} node={node} onSelect={setSelected} />
             ))}
           </div>
         </div>
@@ -759,6 +837,19 @@ function ConnectionMap({ report, overlay, nowTick }: {
         <p className="text-xs text-warning-600 dark:text-warning-400">
           Probe tables unreadable — apply supabase/migrations/20261012120000_system_probe_state.sql and the admin read policy migration.
         </p>
+      )}
+
+      {selectedNode && (
+        <MapNodeModal
+          node={selectedNode}
+          probe={probe(MAP_KEY_TO_PROBE[selectedNode.key] ?? '')}
+          check={check(MAP_KEY_TO_CHECK[selectedNode.key] ?? '')}
+          report={report}
+          alerts={overlay?.openAlerts ?? []}
+          alertsReadable={overlay?.alertsReadable ?? false}
+          nowTick={nowTick}
+          onClose={closeSelected}
+        />
       )}
     </div>
   );
@@ -1728,6 +1819,16 @@ export function SystemHealthPage() {
                 </div>
               </div>
             </ModalShell>
+          )}
+
+          {verdict && (
+            <HealthAssistantPanel
+              key={env}
+              report={report}
+              verdict={verdict}
+              overlay={overlay}
+              envLabel={envConfig.label}
+            />
           )}
         </>
       )}
