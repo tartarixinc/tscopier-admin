@@ -203,3 +203,13 @@ The tool opens the database read-only and never writes to it.
 Use it before asking the user to re-paste results they already sent in an earlier
 session. Once useful evidence is found, copy it into this project's own notes or
 scratchpad — the database is history, not a working record.
+
+## Design review subagent (available globally)
+
+A third global subagent, `design-review`, is available alongside `code-tester` and
+`code-review` (defined at `~/.config/opencode/agent/design-review.md`, read-only). Use it
+after the Post-Implementation Review when the *design* is in question — changes spanning
+multiple components, trade-offs, or architecture — via the `task` tool with
+`subagent_type: "design-review"`. It critiques design decisions and their rationale (not
+code style or test results). It is loaded at opencode startup, so restart opencode after
+the agent file is first created.
