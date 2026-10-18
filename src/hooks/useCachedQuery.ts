@@ -47,6 +47,7 @@ export function useCachedQuery<T>(
   const fnRef = useRef(fn);
   const optsRef = useRef(opts);
   const tokenRef = useRef(0);
+  const lastTickRef = useRef(refreshTick);
   fnRef.current = fn;
   optsRef.current = opts;
 
@@ -56,6 +57,10 @@ export function useCachedQuery<T>(
     const token = ++tokenRef.current;
     const { ttlMs, maxStaleMs } = optsRef.current;
     const cached = readCache<T>(key);
+    // Only a manual refresh bumps the tick; a key or cache-version change
+    // must not force, or every realtime event would bypass the TTL.
+    const forced = refreshTick !== lastTickRef.current;
+    lastTickRef.current = refreshTick;
 
     if (cached) {
       const age = Date.now() - cached.fetchedAt;
@@ -64,20 +69,32 @@ export function useCachedQuery<T>(
       setError(cached.error);
       setIsRefreshing(age > ttlMs);
       if (maxStaleMs != null && age > maxStaleMs) setBeyondMaxStale(true);
+    } else {
+      // A new cache key (different user, environment or date range) has no
+      // data yet: show the loading state instead of leaving the view blank.
+      setLoading(true);
+      setError(null);
+      setIsRefreshing(false);
+      setBeyondMaxStale(false);
+      setLastUpdated(null);
     }
 
     const mustBlock = cached != null
       && maxStaleMs != null
       && Date.now() - cached.fetchedAt > maxStaleMs;
-    const query = mustBlock
-      ? cachedQueryFresh<T>(key, fnRef.current, optsRef.current)
-      : cachedQuery<T>(key, fnRef.current, optsRef.current);
+    const query = forced
+      ? cachedQuery<T>(key, fnRef.current, optsRef.current, true)
+      : mustBlock
+        ? cachedQueryFresh<T>(key, fnRef.current, optsRef.current)
+        : cachedQuery<T>(key, fnRef.current, optsRef.current);
 
     query
       .then(() => {
         if (token !== tokenRef.current) return;
         const entry = readCache<T>(key);
-        setError(null);
+        // A background refresh that failed keeps the old rows and stores the
+        // error on the entry — read it back so the view can say so.
+        setError(entry?.error ?? null);
         setLastUpdated(entry?.fetchedAt ?? Date.now());
         setIsRefreshing(false);
         setBeyondMaxStale(false);
