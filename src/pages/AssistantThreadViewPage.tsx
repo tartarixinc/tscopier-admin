@@ -4,7 +4,7 @@ import { authSupabase as adminSupabase } from '../lib/adminSupabase';
 import { formatDate } from '../lib/formatters';
 import { Card } from '../components/ui/Card';
 import { UserLink } from '../components/UserLink';
-import { ArrowLeft, AlertTriangle, User, Sparkles } from 'lucide-react';
+import { ArrowLeft, AlertTriangle, Sparkles } from 'lucide-react';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
