@@ -2,6 +2,13 @@
 
 ## Changelog
 
+### 2026-10-21 — Readable label on the selected STAGING switch
+
+- **Context:** the selected STAGING button used white text on the amber background, which was hard to read.
+- **What changed:** the selected STAGING state now forces dark text (`!text-slate-900`, including dark mode) on both the login switch and the topbar switch.
+- **Verification:** typecheck ✓, lint 0 errors ✓, build ✓; generated CSS confirms the important rule.
+- **Files changed:** `src/pages/LoginPage.tsx`, `src/components/AdminShell.tsx`, this changelog.
+
 ### 2026-10-20 — Broker trading-disabled failures classified correctly (admin side)
 
 - **Context:** the TSCopier worker now writes a stable failure code `BROKER_SYMBOL_TRADE_DISABLED` when a broker rejects an order because the symbol is disabled or the account restricts it. The admin explainer and health classifier needed to know that code so it lands in the right bucket with the right wording.

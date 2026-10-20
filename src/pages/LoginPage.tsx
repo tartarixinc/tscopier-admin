@@ -106,7 +106,7 @@ export function LoginPage() {
                     envKey === activeEnv
                       ? 'bg-white dark:bg-slate-600 text-slate-900 dark:text-white shadow-sm'
                       : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200',
-                    envKey === 'staging' && envKey === activeEnv && 'bg-amber-500 text-white dark:bg-amber-500 shadow-none',
+                    envKey === 'staging' && envKey === activeEnv && 'bg-amber-500 !text-slate-900 dark:bg-amber-500 dark:!text-slate-900 shadow-none',
                     envKey === 'migration' && envKey === activeEnv && 'bg-violet-600 text-white dark:bg-violet-600 shadow-none',
                   )}
                 >
