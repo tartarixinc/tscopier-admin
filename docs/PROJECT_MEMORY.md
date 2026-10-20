@@ -2,6 +2,14 @@
 
 ## Changelog
 
+### 2026-10-20 — Broker trading-disabled failures classified correctly (admin side)
+
+- **Context:** the TSCopier worker now writes a stable failure code `BROKER_SYMBOL_TRADE_DISABLED` when a broker rejects an order because the symbol is disabled or the account restricts it. The admin explainer and health classifier needed to know that code so it lands in the right bucket with the right wording.
+- **What changed:** `src/lib/failureExplainer.ts` explains the code as a per-account symbol restriction (not a missing instrument, not retryable). `src/lib/systemHealth.ts` classifies it as an external, per-account failure so it does not inflate the systemic rate.
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors, 2 pre-existing warnings), `npm run build` ✓.
+- **Deploy state:** committed and pushed with the Systems Health upgrade batch to `main`; Netlify deploys it.
+- **Files changed:** `src/lib/failureExplainer.ts`, `src/lib/systemHealth.ts`, this changelog.
+
 ### 2026-10-20 — OpenAI credits alert wired into the upgraded Systems Health page
 
 - **Context:** OpenAI credits running out stops AI signal parsing (only the regex parser remains), but nothing alerted on it. The check also had to live on the upgraded Systems Health page, which carries the connection map, probe panel, alerts console and AI assistant.

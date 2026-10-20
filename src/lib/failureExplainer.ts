@@ -28,6 +28,14 @@ const SKIP_REASON_EXPLANATIONS: Record<string, FailureExplanation> = {
     explanation: 'The broker rejected the SL/TP on this order. This often happens when price moved before the order filled, or stops were on the wrong side of market.',
     actions: ['Check that SL/TP still make sense at the fill price.'],
   },
+  broker_symbol_trade_disabled: {
+    title: 'Broker has trading disabled on this symbol',
+    explanation: 'The broker account has this symbol, but trading is switched off for the symbol or the account. The order was rejected and no position was opened. This is not a missing instrument.',
+    actions: [
+      'Ask the broker to enable trading for this symbol.',
+      'Or set a symbol mapping on the account to an enabled symbol.',
+    ],
+  },
   entry_not_opened: {
     title: 'No position opened',
     explanation: 'The copier processed and dispatched this signal, but the broker ended up opening no position and no specific error was captured — entry_not_opened is the fallback reason. Either the entry never became a sendable broker order, or the broker accepted the request but returned no position.',

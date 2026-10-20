@@ -321,8 +321,8 @@ function classifyReason(code: string): ErrorBucketSummary['bucket'] {
 function classifyBrokerFailureReason(message: string): string {
   const lower = String(message ?? '').toLowerCase();
   if (/margin|not enough money|insufficient funds/.test(lower)) return 'INSUFFICIENT_MARGIN';
-  if (/trading\s+(?:is\s+)?disabled|trade\s+(?:is\s+)?disabled|symbol\s+(?:trading\s+)?disabled/.test(lower)
-    || /(?:trade\s*mode|trademode)[^\n]{0,40}(?:disabled|close\s*only|long\s*only|short\s*only)/.test(lower)) {
+  if (/trading\s+(?:is\s+)?disabled|trade\s+(?:is\s+)?disabled|symbol\s+(?:is\s+)?(?:trading\s+)?disabled/.test(lower)
+    || /(?:trade\s*mode|trademode)[^\n]{0,40}close\s*only/.test(lower)) {
     return 'BROKER_SYMBOL_TRADE_DISABLED';
   }
   if (/market.*closed|off quotes|trade disabled/.test(lower)) return 'MARKET_CLOSED';
