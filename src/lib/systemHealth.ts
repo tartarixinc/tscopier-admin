@@ -179,6 +179,19 @@ export interface RailwayHealth {
   error?: string;
 }
 
+/** OpenAI credit/liveness probe written by the alert-evaluator every minute. */
+export interface OpenAiHealth {
+  available: boolean;
+  state: 'up' | 'down' | 'unknown';
+  detail: string | null;
+  downSince: string | null;
+  updatedAt: string | null;
+  latencyMs: number | null;
+  /** True when the probe row has not been refreshed for more than 3 minutes. */
+  stale: boolean;
+  error?: string;
+}
+
 /** One individual failing execution within a bucket (for the drill-down modal). */
 export interface ErrorBucketRow {
   id: string;
@@ -214,6 +227,7 @@ export interface SystemHealthReport {
   telegram: TelegramPanel;
   brokers: BrokerPanel;
   railway: RailwayHealth;
+  openai: OpenAiHealth;
   errorBuckets: ErrorBucketSummary[];
   /** Average total failed executions per window over the previous 7 days — the "usual rate" every bucket is compared against. */
   failureBaselinePerWindow: number;
@@ -250,7 +264,7 @@ const EXTERNAL_BUCKET_CODES = new Set([
 ]);
 
 /** Broker rejected the order but the specific reason was unrecognized. */
-const BROKER_AMBI_CODES = new Set(['BROKER_ORDER_REJECTED', 'BROKER_SYMBOL_NOT_FOUND', 'SYMBOL_UNSUPPORTED']);
+const BROKER_AMBI_CODES = new Set(['BROKER_ORDER_REJECTED', 'BROKER_SYMBOL_NOT_FOUND', 'BROKER_SYMBOL_TRADE_DISABLED', 'SYMBOL_UNSUPPORTED']);
 
 const SYSTEM_BUCKET_CODES = new Set([
   'BROKER_TIMEOUT',
@@ -307,10 +321,14 @@ function classifyReason(code: string): ErrorBucketSummary['bucket'] {
 function classifyBrokerFailureReason(message: string): string {
   const lower = String(message ?? '').toLowerCase();
   if (/margin|not enough money|insufficient funds/.test(lower)) return 'INSUFFICIENT_MARGIN';
+  if (/trading\s+(?:is\s+)?disabled|trade\s+(?:is\s+)?disabled|symbol\s+(?:trading\s+)?disabled/.test(lower)
+    || /(?:trade\s*mode|trademode)[^\n]{0,40}(?:disabled|close\s*only|long\s*only|short\s*only)/.test(lower)) {
+    return 'BROKER_SYMBOL_TRADE_DISABLED';
+  }
   if (/market.*closed|off quotes|trade disabled/.test(lower)) return 'MARKET_CLOSED';
   if (/invalid volume|lot|minimum volume|min lot/.test(lower)) return 'INVALID_LOT';
   if (/symbolselect/.test(lower)
-    || (/symbol|instrument/.test(lower) && /not found|unknown|disabled|unsupported|invalid|select\s+failed/.test(lower))) {
+    || (/symbol|instrument/.test(lower) && /not found|unknown|unsupported|invalid|select\s+failed/.test(lower))) {
     return 'BROKER_SYMBOL_NOT_FOUND';
   }
   if (/timeout|timed out|operation timeout/.test(lower)) return 'BROKER_TIMEOUT';
@@ -591,6 +609,7 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
       .gte('created_at', baselineSince)
       .lt('created_at', baselineUntil))();
   const railwayP = fetchRailwayHealth(windowHours);
+  const openAiP = fetchOpenAiHealth();
 
   // --- Worker fleet + active copier leases. Use the table's real role/shard
   // columns (not the worker_id string) — instance ids can contain colons.
@@ -916,11 +935,12 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
   const dbReachable = unreadableSources.length === 0;
 
   const railway = await railwayP;
+  const openai = await openAiP;
 
   const checks = buildChecks({
     unreadableSources, serverNowMs, activeLeases: activeLeases.length,
     shardConsistent, fleet, telegram, brokers, flow, deadLettersOpen, errorBuckets, railway,
-    windowHours,
+    openai, windowHours,
   });
 
   return {
@@ -935,6 +955,7 @@ export async function fetchSystemHealth(windowHours: HealthWindow): Promise<Syst
     telegram,
     brokers,
     railway,
+    openai,
     errorBuckets,
     failureBaselinePerWindow: baselinePerWindow,
     deadLettersOpen,
@@ -975,6 +996,49 @@ async function fetchRailwayHealth(windowHours: HealthWindow): Promise<RailwayHea
   }
 }
 
+/**
+ * Read the OpenAI credit probe written by alert-evaluator.
+ *
+ * Best-effort: a missing row or missing admin read policy must not make the
+ * whole report unreadable, so this never pushes to unreadableSources. The
+ * check below reports "probe not reporting" instead, which is honest and
+ * still visible in the verdict.
+ */
+async function fetchOpenAiHealth(): Promise<OpenAiHealth> {
+  const empty: OpenAiHealth = {
+    available: false,
+    state: 'unknown',
+    detail: null,
+    downSince: null,
+    updatedAt: null,
+    latencyMs: null,
+    stale: false,
+  };
+  try {
+    const { data, error } = await authSupabase
+      .from('system_probe_state')
+      .select('state, detail, down_since, updated_at, latency_ms')
+      .eq('target', 'openai_api')
+      .maybeSingle();
+    if (error) return { ...empty, error: error.message };
+    if (!data) return empty;
+
+    const updatedMs = data.updated_at ? Date.parse(data.updated_at) : NaN;
+    const stale = !Number.isFinite(updatedMs) || Date.now() - updatedMs > 180_000;
+    return {
+      available: true,
+      state: data.state === 'up' || data.state === 'down' ? data.state : 'unknown',
+      detail: data.detail ?? null,
+      downSince: data.down_since ?? null,
+      updatedAt: data.updated_at ?? null,
+      latencyMs: typeof data.latency_ms === 'number' ? data.latency_ms : null,
+      stale,
+    };
+  } catch (err) {
+    return { ...empty, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Checks → tiles
 // ---------------------------------------------------------------------------
@@ -997,9 +1061,10 @@ function buildChecks(ctx: {
   deadLettersOpen: number
   errorBuckets: ErrorBucketSummary[]
   railway: RailwayHealth
+  openai: OpenAiHealth
   windowHours: HealthWindow
 }): CheckResult[] {
-  const { unreadableSources, activeLeases, shardConsistent, fleet, telegram, brokers, flow, deadLettersOpen, errorBuckets, railway, windowHours } = ctx;
+  const { unreadableSources, activeLeases, shardConsistent, fleet, telegram, brokers, flow, deadLettersOpen, errorBuckets, railway, openai, windowHours } = ctx;
   const checks: CheckResult[] = [];
 
   const workersUnreadable = unreadableSources.some(s => s.startsWith('clock probe') || s.startsWith('worker_session_leases'));
@@ -1091,6 +1156,21 @@ function buildChecks(ctx: {
       : flow.stuckParsedCount >= HEALTH_THRESHOLDS.stuckParsedWarnCount || flow.failed >= HEALTH_THRESHOLDS.escalation.minOccurrences
         ? { id: 'copying', label: 'Trade copying', state: 'warn', summary: 'Blockage detected', context: `${flow.stuckParsedCount} stuck parsed · ${flow.failed} failed`, detail: `${flow.stuckParsedCount} signals were understood but not resolved within ${HEALTH_THRESHOLDS.stuckParsedGraceMin} minutes, and ${flow.failed} failed at the broker (last ${windowHours}h). Check the flow board below.` }
         : { id: 'copying', label: 'Trade copying', state: 'ok', summary: flow.executed > 0 ? `${flow.executed} copied` : 'No trades in window', context: `${fmtDur(flow.latencies[0]?.p95Ms ?? 0)} p95 parse` },
+  );
+
+  const openAiBilling = (openai.detail ?? '').startsWith('billing:');
+  checks.push(
+    !openai.available
+      ? { id: 'openai', label: 'OpenAI credits', state: 'warn', summary: 'Credit probe not reporting', context: openai.error ? openai.error.slice(0, 80) : 'no probe row yet', detail: 'The alert-evaluator writes this probe every minute. If it is absent, either the evaluator is not running or OPENAI_API_KEY is not set on the edge function. Without it, credits running out cannot be detected.' }
+      : openai.stale
+        ? { id: 'openai', label: 'OpenAI credits', state: 'warn', summary: 'Credit probe is stale', context: openai.updatedAt ? `last report ${new Date(openai.updatedAt).toLocaleTimeString()}` : undefined, detail: 'The probe has not refreshed for more than 3 minutes. The evaluator may be down, so a credits outage could go unnoticed.' }
+        : openai.state === 'down' && openAiBilling
+          ? { id: 'openai', label: 'OpenAI credits', state: 'fail', summary: 'Credits exhausted', context: openai.detail ?? undefined, detail: 'OpenAI is refusing requests. AI signal parsing has stopped and only the regex parser runs. Add credits immediately.' }
+          : openai.state === 'down'
+            ? { id: 'openai', label: 'OpenAI credits', state: 'warn', summary: 'Probe reports a problem', context: openai.detail ?? undefined, detail: 'The probe is failing, but not with a billing code. Check the detail above; this is not proof that credits ran out.' }
+            : openai.state === 'unknown'
+              ? { id: 'openai', label: 'OpenAI credits', state: 'warn', summary: 'Credits unknown', context: openai.detail ?? undefined, detail: 'The last probe could not reach OpenAI (timeout or server error). Unknown is never treated as healthy.' }
+              : { id: 'openai', label: 'OpenAI credits', state: 'ok', summary: 'Credits available', context: openai.latencyMs != null ? `${openai.latencyMs}ms probe` : undefined },
   );
 
   return checks;

@@ -230,6 +230,7 @@ export async function buildHealthAssistantSnapshot(
       title: `Clock offset vs DB: ${report.clockOffsetMs >= 0 ? '+' : ''}${Math.round(report.clockOffsetMs / 1000)}s`,
     }),
     railway: () => railwayBox(probeNode('worker_trade').state, checksById.get('workers')?.state),
+    openai: () => checkNode('openai', report.openai.state === 'up' ? 'OK' : report.openai.state),
     backtest: () => ({ value: 'on demand', state: 'unknown' as HealthState, title: 'Backtest runs are triggered manually from the Backtests page — idle is normal.' }),
     'broker-accounts': () => checkNode('brokers', String(report.brokers.connected + report.brokers.recovering + report.brokers.error)),
   };

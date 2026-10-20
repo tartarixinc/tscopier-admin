@@ -14,6 +14,7 @@ import {
   type StageId,
   type StageDetail,
   type ErrorBucketSummary,
+  type OpenAiHealth,
   type UserHealth,
 } from '../lib/systemHealth';
 import { ENVIRONMENTS, getAdminEnv } from '../lib/environment';
@@ -448,6 +449,40 @@ function OrganModal({ organ, report, onClose }: { organ: OrganId; report: Report
             </p>
           )
         )}
+
+        {organ === 'openai' && (
+          <>
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              <p>State: <b>{openaiStateShort(report.openai)}</b></p>
+              <p>Last probe: <b>{report.openai.updatedAt ? new Date(report.openai.updatedAt).toLocaleString() : '—'}</b></p>
+              <p>Latency: <b>{report.openai.latencyMs != null ? `${report.openai.latencyMs}ms` : '—'}</b></p>
+              <p>Down since: <b>{report.openai.downSince ? new Date(report.openai.downSince).toLocaleString() : '—'}</b></p>
+            </div>
+            {report.openai.detail && (
+              <div>
+                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1">Probe detail</p>
+                <p className="text-xs font-mono text-slate-600 dark:text-slate-300 break-words">{report.openai.detail}</p>
+              </div>
+            )}
+            {!report.openai.available && (
+              <p className="text-sm text-slate-400">
+                No probe row yet. The alert evaluator writes it every minute; check that it is deployed and that OPENAI_API_KEY is set on the edge function.
+              </p>
+            )}
+            <p className="text-[11px] text-slate-400">
+              A rate limit without a billing code still counts as credits available; only billing codes (for example
+              <span className="font-mono"> credit_balance_exhausted</span> or <span className="font-mono">insufficient_quota</span>) raise the alert.
+            </p>
+            <a
+              href="https://platform.openai.com/settings/organization/billing"
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs underline text-primary-600 dark:text-primary-400"
+            >
+              Open OpenAI billing →
+            </a>
+          </>
+        )}
       </div>
     </ModalShell>
   );
@@ -781,6 +816,13 @@ function ConnectionMap({ report, overlay, nowTick }: {
       title: evaluator.title || 'Cron-driven alert evaluator, runs every minute',
     },
     {
+      ...MAP_NODE_COPY.openai,
+      key: 'openai',
+      value: openaiStateShort(report.openai),
+      state: check('openai')?.state ?? 'unknown',
+      title: check('openai')?.summary,
+    },
+    {
       ...MAP_NODE_COPY.backtest,
       key: 'backtest',
       value: 'on demand',
@@ -1047,6 +1089,13 @@ function TheMachine({ report, windowHours }: { report: Report; windowHours: Heal
             sub={report.railway.available ? `${railwayFmt(report.railway.realtimeFailures)} realtime fails` : 'not configured'}
             onClick={() => setOpenOrgan('railway')}
           />
+          <OrganButton
+            check={organState(report.checks, 'openai')}
+            label={ORGAN_COPY.openai.label}
+            value={openaiStateShort(report.openai)}
+            sub={report.openai.available ? 'AI parsing' : 'probe not reporting'}
+            onClick={() => setOpenOrgan('openai')}
+          />
         </div>
 
         {/* Journey */}
@@ -1094,6 +1143,14 @@ function TheMachine({ report, windowHours }: { report: Report; windowHours: Heal
       {openOrgan && <OrganModal organ={openOrgan} report={report} onClose={() => setOpenOrgan(null)} />}
     </div>
   );
+}
+
+function openaiStateShort(openai: OpenAiHealth): string {
+  if (!openai.available) return '—';
+  if (openai.stale) return 'stale';
+  if (openai.state === 'up') return 'OK';
+  if (openai.state === 'unknown') return 'unknown';
+  return (openai.detail ?? '').startsWith('billing:') ? 'OUT' : 'down';
 }
 
 function railwayStateShort(state: 'healthy' | 'degraded' | 'storm' | 'worker_down'): string {

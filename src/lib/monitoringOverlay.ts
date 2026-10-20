@@ -276,6 +276,7 @@ export const PROBE_TARGET_LABELS: Record<string, string> = {
   bridge_mt4: 'MT4 bridge',
   worker_trade: 'Trade worker heartbeat',
   alert_evaluator: 'Alert evaluator',
+  openai_api: 'OpenAI credits',
 };
 
 export function probeTargetLabel(target: string): string {

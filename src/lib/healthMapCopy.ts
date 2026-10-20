@@ -122,6 +122,12 @@ export const MAP_NODE_COPY: Record<string, MapNodeCopy> = {
     impact: 'Monitoring goes blind: no alerts fire and no email is sent while the rest of the product may look fine. A dedicated alert rule (probe stale) watches the evaluator itself and pages on its recovery.',
     rules: ['probe_stale'],
   },
+  openai: {
+    label: 'OpenAI',
+    what: 'The OpenAI API used for AI signal parsing and the health assistant. The alert evaluator sends a one-token request every minute; when the organization cannot spend, OpenAI refuses it with a billing code.',
+    impact: 'AI parsing stops. Only the regex parser runs, so complex signals may be missed until credits are added. The health assistant also stops answering.',
+    rules: ['openai_credits_exhausted'],
+  },
   backtest: {
     label: 'Backtest',
     what: 'Backtest runs are triggered manually from the Backtests page and use historical data only. Idle is the normal state.',
@@ -130,7 +136,7 @@ export const MAP_NODE_COPY: Record<string, MapNodeCopy> = {
   },
 };
 
-export type OrganId = 'workers' | 'telegram' | 'brokers' | 'railway';
+export type OrganId = 'workers' | 'telegram' | 'brokers' | 'railway' | 'openai';
 
 /** Plain-English "what this is" shown at the top of each organ modal. */
 export const ORGAN_COPY: Record<OrganId, { label: string; what: string }> = {
@@ -150,6 +156,10 @@ export const ORGAN_COPY: Record<OrganId, { label: string; what: string }> = {
     label: 'Worker process logs',
     what: 'Live Railway deployment logs watched for worker crashes, realtime subscription churn, and log rate-limits — the exact pattern of the Aug 25 retry storm.',
   },
+  openai: {
+    label: 'OpenAI credits',
+    what: 'Every minute the alert evaluator makes a one-token OpenAI request. If the account cannot spend, the request is refused with a billing code and a critical alert email is sent. This panel shows that live probe.',
+  },
 };
 
 export const MAP_KEY_TO_PROBE: Record<string, string> = {
@@ -157,6 +167,7 @@ export const MAP_KEY_TO_PROBE: Record<string, string> = {
   'bridge-mt5': 'bridge_mt5',
   'bridge-mt4': 'bridge_mt4',
   scheduler: 'alert_evaluator',
+  openai: 'openai_api',
 };
 
 export const MAP_KEY_TO_CHECK: Record<string, string> = {
@@ -165,6 +176,7 @@ export const MAP_KEY_TO_CHECK: Record<string, string> = {
   signals: 'copying',
   queue: 'queue',
   'broker-accounts': 'brokers',
+  openai: 'openai',
 };
 
 /**
