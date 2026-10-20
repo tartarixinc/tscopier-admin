@@ -11,7 +11,7 @@ import { authSupabase } from '../lib/adminSupabase';
 import { clearCache } from '../lib/queryCache';
 import { stopRealtime } from '../lib/realtimeBridge';
 import { shortId } from '../lib/formatters';
-import { adminEnvSessionKey, getAdminEnv, isEnvConfigured, setAdminEnv, ENVIRONMENTS, projectRefOf, type AdminEnv } from '../lib/environment';
+import { adminEnvSessionKey, getAdminEnv, availableEnvs, setAdminEnv, ENVIRONMENTS, projectRefOf } from '../lib/environment';
 import clsx from 'clsx';
 
 interface NavItem {
@@ -297,9 +297,10 @@ export function AdminShell({ children }: AdminShellProps) {
     navigate('/login');
   }
 
-  const envToggle = isEnvConfigured('staging') ? (
+  const envs = availableEnvs();
+  const envToggle = envs.length > 1 ? (
     <div className="flex items-center rounded-lg bg-slate-100 dark:bg-slate-700/60 p-0.5 text-xs font-semibold shrink-0">
-      {(['prod', 'staging'] as AdminEnv[]).map(envKey => (
+      {envs.map(envKey => (
         <button
           key={envKey}
           type="button"
@@ -310,6 +311,7 @@ export function AdminShell({ children }: AdminShellProps) {
               ? 'bg-white dark:bg-slate-600 text-slate-900 dark:text-white shadow-sm'
               : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200',
             envKey === 'staging' && envKey === activeEnv && 'bg-amber-500 text-white dark:bg-amber-500 shadow-none',
+            envKey === 'migration' && envKey === activeEnv && 'bg-violet-600 text-white dark:bg-violet-600 shadow-none',
           )}
         >
           {ENVIRONMENTS[envKey].shortLabel}
@@ -320,9 +322,14 @@ export function AdminShell({ children }: AdminShellProps) {
 
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50 dark:bg-slate-900 flex-col">
-      {activeEnv === 'staging' && (
-        <div className="shrink-0 bg-amber-500 text-white text-xs font-semibold text-center px-4 py-1.5 tracking-wide">
-          STAGING ENVIRONMENT ({projectRefOf('staging')}) — data shown is from the staging Supabase project
+      {activeEnv !== 'prod' && (
+        <div
+          className={clsx(
+            'shrink-0 text-white text-xs font-semibold text-center px-4 py-1.5 tracking-wide',
+            activeEnv === 'staging' ? 'bg-amber-500' : 'bg-violet-600',
+          )}
+        >
+          {ENVIRONMENTS[activeEnv].label.toUpperCase()} ENVIRONMENT ({projectRefOf(activeEnv)}) — data shown is from the {ENVIRONMENTS[activeEnv].label.toLowerCase()} Supabase project
         </div>
       )}
 

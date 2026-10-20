@@ -48,6 +48,14 @@ export const tooltipStyle = {
   fontSize: 12,
 };
 
+export const tooltipItemStyle = {
+  color: '#f1f5f9',
+};
+
+export const tooltipLabelStyle = {
+  color: '#cbd5e1',
+};
+
 export const gridStyle = {
   strokeDasharray: '3 3',
   stroke: '#334155',

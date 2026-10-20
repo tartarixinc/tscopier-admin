@@ -14,7 +14,9 @@ import { fetchUserStatistics, type UserStatistics } from '../../lib/userStatisti
 import {
   formatDate, formatDateOnly, formatCurrency, formatNumber, formatPercent, formatLots,
 } from '../../lib/formatters';
-import { CHART_COLORS, tooltipStyle, gridStyle, axisStyle } from '../../lib/chartTheme';
+import {
+  CHART_COLORS, tooltipStyle, tooltipItemStyle, tooltipLabelStyle, gridStyle, axisStyle,
+} from '../../lib/chartTheme';
 import {
   BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer,
 } from 'recharts';
@@ -478,6 +480,8 @@ export function UserStatisticsTab({ userId }: UserStatisticsTabProps) {
                   <YAxis {...axisStyle} width={70} tickFormatter={(v: number) => formatNumber(v, 0)} />
                   <Tooltip
                     contentStyle={tooltipStyle}
+                    itemStyle={tooltipItemStyle}
+                    labelStyle={tooltipLabelStyle}
                     formatter={(v, n) => [
                       money(Number(v), activeSeries?.currency ?? null),
                       n === 'value'

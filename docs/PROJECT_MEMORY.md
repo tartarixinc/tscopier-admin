@@ -2,6 +2,35 @@
 
 ## Changelog
 
+### 2026-10-19 — Environment switch on the login page
+
+- **Context:** the PROD/STAGING/MIGRATION switch only existed inside `AdminShell`, so an admin could not choose the environment before signing in. The login page showed the active environment as a read-only badge.
+- **What changed:** `src/pages/LoginPage.tsx` now renders a segmented environment switch above the sign-in card whenever more than one environment is configured (`availableEnvs()`), using the same labels and colours as the topbar switch. Selecting a different environment calls `setAdminEnv()`, which reloads the page so `adminSupabase` connects to the newly selected project before authentication. The existing active-environment badge and project ref remain visible.
+- **Behaviour:** only environments with both a URL and an anon key appear. Clicking the current environment does nothing.
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors, 2 pre-existing warnings), `npm run build` ✓.
+- **Files changed:** `src/pages/LoginPage.tsx`, this changelog.
+
+### 2026-10-19 — Restore the MIGRATION environment switch on `feat/admin-user-statistics`
+
+- **Context:** the topbar showed only PROD/STAGING on the current branch. Investigation (`git reflog`, `git log --all -S`) proved it was **never removed by a commit**: it was added once in `d82565a` (2026-09-28) on `feat/user-detail-enhancements`, and that branch was never merged into `main`. On 2026-10-18 14:31:51 the working copy switched to `feat/admin-user-statistics`, which was created from `origin/main` (35335b1) and therefore never contained it. No stash or dangling commit held a copy; the code is intact on `feat/user-detail-enhancements` and `origin/feat/user-detail-enhancements`.
+- **What changed (manual port of `d82565a`, no cherry-pick so newer files are untouched):**
+  - `src/lib/environment.ts` — `AdminEnv` is `'prod' | 'staging' | 'migration'`; added `MIGRATION_BRANCH_URL` (`supmsgcubipmmowrzoub`), `ADMIN_ENVS`, `availableEnvs()`, `getAdminEnvConfig()`; `getAdminEnv()` now accepts any configured env and falls back to the first available one.
+  - `src/components/AdminShell.tsx` — toggle built from `availableEnvs()` instead of a hardcoded `['prod','staging']`; violet active state for MIGRATION; the banner now appears for **any** non-prod env (amber for staging, violet for migration).
+  - `src/pages/LoginPage.tsx` — extracted `ENV_BADGE_CLASS` / `ENV_DOT_CLASS`, added the violet migration variant.
+  - `src/pages/UserDetailPage.tsx` — subscription/invoice email actions now read `getAdminEnvConfig()` instead of hardcoded `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`. This fixes a real cross-environment bug: on staging/migration those actions were calling the **production** function with the production key.
+- **Requirement:** MIGRATION only appears when `VITE_SUPABASE_ANON_KEY_MIGRATION` is set (a Supabase branch has its own JWT secret). `.env` already has `VITE_SUPABASE_URL_MIGRATION` / `VITE_SUPABASE_ANON_KEY_MIGRATION`; Netlify needs the same vars before it appears in a deployed build.
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors; 2 known pre-existing warnings), `npm run build` ✓. Not clicked through in a browser this session.
+- **Files changed:** `src/lib/environment.ts`, `src/components/AdminShell.tsx`, `src/pages/LoginPage.tsx`, `src/pages/UserDetailPage.tsx`, this changelog.
+
+### 2026-10-19 — Statistics tab chart tooltip: no black text on the dark tooltip
+
+- **Context:** on the per-user **Statistics** tab, the P&L-over-time chart's tooltip has a dark background but its text rendered black and was hard to read.
+- **Cause:** Recharts' default tooltip item style is `color: '#000'`, applied only when a series has no `color` of its own. The P&L `Bar` sets no `fill` (each point gets its colour from a `<Cell>`), so the tooltip entry had no colour and fell back to black.
+- **Fix:** the shared `tooltipStyle` in `src/lib/chartTheme.ts` now also exports `tooltipItemStyle` and `tooltipLabelStyle` (light text: `#f1f5f9` / `#cbd5e1`), applied to that chart's `<Tooltip>` in `src/components/user/UserStatisticsTab.tsx`.
+- **Files changed:** `src/lib/chartTheme.ts`, `src/components/user/UserStatisticsTab.tsx`, this changelog.
+- **Verification:** `npm run typecheck` ✓, `npm run lint` ✓ (0 errors; the 2 known pre-existing `react-refresh` warnings). No test suite in this repo.
+- **Follow-up:** other pages use the same shared `tooltipStyle` and have the same fallback for `Cell`-coloured single-series bars (e.g. `PnlAnalyticsTab`); apply `tooltipItemStyle`/`tooltipLabelStyle` there too if the same black text shows up.
+
 ### 2026-10-18 — New per-user Statistics tab (full audit view) + admin read policy for `copier_listener_health`
 
 - **Context:** a support case (customer `simonmwei554`, cancellation request on the grounds of "performance is bad") had to be answered by hand-writing SQL against production. Nothing in the dashboard could show, for one user, what the broker balance did, what the copier recorded, which channel made or lost money, which signals never became trades, or whether the copier was even running. That is the question the admin user profile has to answer, so it is now a tab.

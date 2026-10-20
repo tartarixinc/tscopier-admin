@@ -4,9 +4,25 @@ import { authSupabase } from '../lib/adminSupabase';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { Alert } from '../components/ui/Alert';
-import { adminEnvSessionKey, getAdminEnv, ENVIRONMENTS, projectRefOf } from '../lib/environment';
+import {
+  adminEnvSessionKey, getAdminEnv, availableEnvs, setAdminEnv, ENVIRONMENTS, projectRefOf,
+} from '../lib/environment';
+import clsx from 'clsx';
 
 const activeEnv = getAdminEnv();
+const activeEnvs = availableEnvs();
+
+const ENV_BADGE_CLASS: Record<typeof activeEnv, string> = {
+  prod: 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400',
+  staging: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400',
+  migration: 'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-400',
+};
+
+const ENV_DOT_CLASS: Record<typeof activeEnv, string> = {
+  prod: 'bg-emerald-500',
+  staging: 'bg-amber-500',
+  migration: 'bg-violet-500',
+};
 
 export function LoginPage() {
   const [email, setEmail] = useState('');
@@ -66,10 +82,39 @@ export function LoginPage() {
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
             Sign in with your admin account
           </p>
-          <span className={`inline-flex items-center gap-1.5 mt-3 px-2.5 py-1 rounded-full text-[11px] font-semibold ${activeEnv === 'staging' ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400' : 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400'}`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${activeEnv === 'staging' ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+          <span className={`inline-flex items-center gap-1.5 mt-3 px-2.5 py-1 rounded-full text-[11px] font-semibold ${ENV_BADGE_CLASS[activeEnv]}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${ENV_DOT_CLASS[activeEnv]}`} />
             {ENVIRONMENTS[activeEnv].label} environment · {projectRefOf(activeEnv)}
           </span>
+
+          {activeEnvs.length > 1 && (
+            <div
+              className="flex items-center justify-center rounded-lg bg-slate-100 dark:bg-slate-700/60 p-0.5 text-xs font-semibold mt-3 mx-auto w-fit"
+              role="group"
+              aria-label="Select environment"
+            >
+              {activeEnvs.map(envKey => (
+                <button
+                  key={envKey}
+                  type="button"
+                  onClick={() => {
+                    if (envKey !== activeEnv) setAdminEnv(envKey);
+                  }}
+                  aria-pressed={envKey === activeEnv}
+                  className={clsx(
+                    'px-2.5 py-1 rounded-md transition-colors',
+                    envKey === activeEnv
+                      ? 'bg-white dark:bg-slate-600 text-slate-900 dark:text-white shadow-sm'
+                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200',
+                    envKey === 'staging' && envKey === activeEnv && 'bg-amber-500 text-white dark:bg-amber-500 shadow-none',
+                    envKey === 'migration' && envKey === activeEnv && 'bg-violet-600 text-white dark:bg-violet-600 shadow-none',
+                  )}
+                >
+                  {ENVIRONMENTS[envKey].shortLabel}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Card */}
