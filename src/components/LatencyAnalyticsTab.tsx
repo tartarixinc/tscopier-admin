@@ -5,7 +5,8 @@ import { Card, CardHeader, CardContent } from './ui/Card';
 import { Select } from './ui/Select';
 import { SignalDetailModal } from './SignalDetailModal';
 import { parsePipelineTimestamps, computeStageDurations, STAGE_STAT_LABELS } from '../lib/pipelineTimeline';
-import { CHART_PALETTE, tooltipStyle, gridStyle, axisStyle } from '../lib/chartTheme';
+import { useHideTestAccounts, withoutTestAccounts } from '../lib/testAccounts';
+import { CHART_PALETTE, tooltipStyle, tooltipItemStyle, gridStyle, axisStyle } from '../lib/chartTheme';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, Legend,
@@ -137,6 +138,7 @@ export function LatencyAnalyticsTab({ rangeDays }: { rangeDays: number | null })
   const [drillRows, setDrillRows] = useState<DrillRow[]>([]);
   const [drillFilter, setDrillFilter] = useState<DrillFilter>('all');
   const [selectedSignalId, setSelectedSignalId] = useState<string | null>(null);
+  const [hideTestAccounts] = useHideTestAccounts();
 
   useEffect(() => {
     let cancelled = false;
@@ -173,6 +175,8 @@ export function LatencyAnalyticsTab({ rangeDays }: { rangeDays: number | null })
           from.setDate(from.getDate() - rangeDays);
           pageQ = pageQ.gte('opened_at', from.toISOString());
         }
+
+        pageQ = withoutTestAccounts(pageQ, hideTestAccounts);
 
         const { data, count } = await pageQ.range(fromIdx, fromIdx + 999);
 
@@ -353,7 +357,7 @@ export function LatencyAnalyticsTab({ rangeDays }: { rangeDays: number | null })
     })();
 
     return () => { cancelled = true; };
-  }, [rangeDays]);
+  }, [rangeDays, hideTestAccounts]);
 
   const chartData = useMemo(
     () => stats.filter(s => s.key !== 'total_ms').map(s => ({ key: s.key, label: s.label, p50: Math.round(s.p50) })),
@@ -444,7 +448,7 @@ export function LatencyAnalyticsTab({ rangeDays }: { rangeDays: number | null })
               <XAxis dataKey="date" {...axisStyle} tickFormatter={d => d.slice(5)} interval="preserveStartEnd" />
               <YAxis {...axisStyle} tickFormatter={v => formatMs(v as number)} />
               <Tooltip
-                contentStyle={tooltipStyle}
+                contentStyle={tooltipStyle} itemStyle={tooltipItemStyle}
                 formatter={(v, name) => [formatMs(Number(v)), name === 'p50' ? 'Typical (median)' : 'Slowest 5% (p95)']}
                 labelFormatter={(label, payload) => `Date: ${label} — ${(payload?.[0]?.payload as { count?: number } | undefined)?.count ?? 0} trades`}
               />
@@ -491,7 +495,7 @@ export function LatencyAnalyticsTab({ rangeDays }: { rangeDays: number | null })
               <CartesianGrid {...gridStyle} horizontal={false} />
               <XAxis type="number" {...axisStyle} tickFormatter={v => formatMs(v as number)} />
               <YAxis type="category" dataKey="label" width={190} {...axisStyle} />
-              <Tooltip contentStyle={tooltipStyle} formatter={(v) => [formatMs(Number(v)), 'Typical (median)']} labelFormatter={(label, payload) => {
+              <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} formatter={(v) => [formatMs(Number(v)), 'Typical (median)']} labelFormatter={(label, payload) => {
                 const key = (payload?.[0]?.payload as { key?: string } | undefined)?.key ?? '';
                 return `${label} — ${STAGE_GLOSSARY[key] ?? ''}`;
               }} />
@@ -637,7 +641,7 @@ export function LatencyAnalyticsTab({ rangeDays }: { rangeDays: number | null })
                   <CartesianGrid {...gridStyle} />
                   <XAxis dataKey="date" {...axisStyle} tickFormatter={d => d.slice(5)} interval="preserveStartEnd" />
                   <YAxis {...axisStyle} />
-                  <Tooltip contentStyle={tooltipStyle} labelFormatter={d => `Date: ${d}`} />
+                  <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} labelFormatter={d => `Date: ${d}`} />
                   <Legend />
                   <Bar dataKey="failed" name="Failed" stackId="a" fill="#ef4444" />
                   <Bar dataKey="skipped" name="Skipped" stackId="a" fill="#f59e0b" />
@@ -707,7 +711,7 @@ export function LatencyAnalyticsTab({ rangeDays }: { rangeDays: number | null })
               <YAxis type="number" dataKey="totalMs" name="Total latency" {...axisStyle} tickFormatter={v => formatMs(Number(v))} />
               <ZAxis range={[24, 24]} />
               <Tooltip
-                contentStyle={tooltipStyle}
+                contentStyle={tooltipStyle} itemStyle={tooltipItemStyle}
                 cursor={{ strokeDasharray: '3 3' }}
                 formatter={(v, name, item) => {
                   if (name === 'Total latency') return [formatMs(Number(v)), 'Total latency'];

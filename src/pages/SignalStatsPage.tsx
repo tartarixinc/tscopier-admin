@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
 import { authSupabase as adminSupabase } from '../lib/adminSupabase';
 import { Card, CardHeader, CardContent } from '../components/ui/Card';
-import { CHART_PALETTE, STATUS_COLORS, tooltipStyle, gridStyle, axisStyle } from '../lib/chartTheme';
+import { Alert } from '../components/ui/Alert';
+import { HideTestAccountsToggle } from '../components/HideTestAccountsToggle';
+import { useHideTestAccounts, TEST_ACCOUNT_IDS } from '../lib/testAccounts';
+import { CHART_PALETTE, STATUS_COLORS, tooltipStyle, tooltipItemStyle, gridStyle, axisStyle } from '../lib/chartTheme';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell,
@@ -22,57 +25,78 @@ interface ChannelStat {
   count: number;
 }
 
+interface StatusCountRow {
+  status: string;
+  total: number | string;
+}
+
+interface DailyCountRow {
+  day: string;
+  total: number | string;
+}
+
+interface ChannelCountRow {
+  channel: string;
+  total: number | string;
+}
+
 export function SignalStatsPage() {
   const [byStatus, setByStatus] = useState<SignalStat[]>([]);
   const [daily, setDaily] = useState<DailyStat[]>([]);
   const [byChannel, setByChannel] = useState<ChannelStat[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [hideTestAccounts] = useHideTestAccounts();
 
   useEffect(() => {
+    let cancelled = false;
+
     async function load() {
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const pFrom = thirtyDaysAgo.toISOString();
+      const pExclude = hideTestAccounts ? TEST_ACCOUNT_IDS : [];
 
-      const [{ data: allStatuses }, { data: recentSignals }, { data: channelSignals }] = await Promise.all([
-        adminSupabase.from('signals').select('status'),
-        adminSupabase.from('signals').select('created_at, status').gte('created_at', thirtyDaysAgo.toISOString()),
-        adminSupabase.from('signals').select('telegram_channels(display_name)').gte('created_at', thirtyDaysAgo.toISOString()),
+      const [statusResult, dailyResult, channelResult] = await Promise.all([
+        adminSupabase.rpc('admin_signal_status_counts', { p_exclude: pExclude }),
+        adminSupabase.rpc('admin_signal_daily_counts', { p_from: pFrom, p_exclude: pExclude }),
+        adminSupabase.rpc('admin_signal_channel_counts', { p_from: pFrom, p_exclude: pExclude }),
       ]);
 
-      // By status
-      const statusMap: Record<string, number> = {};
-      (allStatuses ?? []).forEach((s) => {
-        statusMap[s.status ?? 'unknown'] = (statusMap[s.status ?? 'unknown'] ?? 0) + 1;
-      });
-      setByStatus(Object.entries(statusMap).map(([status, count]) => ({ status, count })).sort((a, b) => b.count - a.count));
+      if (cancelled) return;
 
-      // Daily
-      const dailyMap: Record<string, number> = {};
-      (recentSignals ?? []).forEach((s) => {
-        const date = s.created_at?.slice(0, 10);
-        if (date) dailyMap[date] = (dailyMap[date] ?? 0) + 1;
-      });
-      const sortedDates = Object.keys(dailyMap).sort();
-      setDaily(sortedDates.map(date => ({ date, count: dailyMap[date] })));
+      const firstError = statusResult.error ?? dailyResult.error ?? channelResult.error;
+      if (firstError) {
+        setError(firstError.message);
+        setByStatus([]);
+        setDaily([]);
+        setByChannel([]);
+        setLoading(false);
+        return;
+      }
 
-      // By channel
-      const chanMap: Record<string, number> = {};
-      (channelSignals ?? []).forEach((s) => {
-        const name = (s.telegram_channels as { display_name: string | null }[] | null)?.[0]?.display_name ?? 'Unknown';
-        chanMap[name] = (chanMap[name] ?? 0) + 1;
-      });
+      setError(null);
+      setByStatus(
+        ((statusResult.data ?? []) as StatusCountRow[])
+          .map(r => ({ status: r.status, count: Number(r.total) }))
+      );
+      setDaily(
+        ((dailyResult.data ?? []) as DailyCountRow[])
+          .map(r => ({ date: r.day, count: Number(r.total) }))
+      );
       setByChannel(
-        Object.entries(chanMap)
-          .map(([channel, count]) => ({ channel, count }))
-          .sort((a, b) => b.count - a.count)
+        ((channelResult.data ?? []) as ChannelCountRow[])
+          .map(r => ({ channel: r.channel, count: Number(r.total) }))
           .slice(0, 20)
       );
-
       setLoading(false);
     }
 
     load();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [hideTestAccounts]);
 
   if (loading) {
     return (
@@ -87,10 +111,19 @@ export function SignalStatsPage() {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <div className="page-header">
-        <h1 className="page-title">Signal Stats</h1>
-        <p className="page-subtitle">Last 30 days of signal activity</p>
+      <div className="page-header flex items-start justify-between gap-3">
+        <div>
+          <h1 className="page-title">Signal Stats</h1>
+          <p className="page-subtitle">Last 30 days of signal activity</p>
+        </div>
+        <HideTestAccountsToggle />
       </div>
+
+      {error && (
+        <Alert variant="error" title="Signal counts are unavailable">
+          {error}
+        </Alert>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* By Status Pie */}
@@ -104,7 +137,7 @@ export function SignalStatsPage() {
                     <Cell key={i} fill={STATUS_COLORS[entry.status] ?? CHART_PALETTE[i % CHART_PALETTE.length]} />
                   ))}
                 </Pie>
-                <Tooltip contentStyle={tooltipStyle} />
+                <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} />
               </PieChart>
             </ResponsiveContainer>
           </CardContent>
@@ -119,7 +152,7 @@ export function SignalStatsPage() {
                 <CartesianGrid {...gridStyle} />
                 <XAxis dataKey="date" {...axisStyle} tickFormatter={d => d.slice(5)} interval="preserveStartEnd" />
                 <YAxis {...axisStyle} />
-                <Tooltip contentStyle={tooltipStyle} />
+                <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} />
                 <Bar dataKey="count" fill={CHART_PALETTE[0]} radius={[3, 3, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
@@ -139,7 +172,7 @@ export function SignalStatsPage() {
                 <CartesianGrid {...gridStyle} />
                 <XAxis type="number" {...axisStyle} />
                 <YAxis type="category" dataKey="channel" width={160} {...axisStyle} tick={{ ...axisStyle.tick, fontSize: 10 }} />
-                <Tooltip contentStyle={tooltipStyle} />
+                <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} />
                 <Bar dataKey="count" fill={CHART_PALETTE[1]} radius={[0, 3, 3, 0]} />
               </BarChart>
             </ResponsiveContainer>

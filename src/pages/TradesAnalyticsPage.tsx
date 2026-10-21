@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { PnlAnalyticsTab } from '../components/PnlAnalyticsTab';
 import { LatencyAnalyticsTab } from '../components/LatencyAnalyticsTab';
+import { HideTestAccountsToggle } from '../components/HideTestAccountsToggle';
 import clsx from 'clsx';
 
 type Tab = 'pnl' | 'latency';
@@ -19,9 +20,12 @@ export function TradesAnalyticsPage() {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <div className="page-header">
-        <h1 className="page-title">Trade Analytics</h1>
-        <p className="page-subtitle">Historical trade metrics — P&L and pipeline latency across live, closed, and past trades</p>
+      <div className="page-header flex items-start justify-between gap-3">
+        <div>
+          <h1 className="page-title">Trade Analytics</h1>
+          <p className="page-subtitle">Historical trade metrics — P&L and pipeline latency across live, closed, and past trades</p>
+        </div>
+        <HideTestAccountsToggle />
       </div>
 
       <div className="flex flex-wrap items-center gap-2">

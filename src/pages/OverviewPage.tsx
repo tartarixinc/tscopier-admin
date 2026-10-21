@@ -5,11 +5,13 @@ import { formatNumber } from '../lib/formatters';
 import { Card, CardHeader, CardContent } from '../components/ui/Card';
 import { StatusBadge } from '../components/StatusBadge';
 import { UserLink } from '../components/UserLink';
+import { HideTestAccountsToggle } from '../components/HideTestAccountsToggle';
+import { useHideTestAccounts, withoutTestAccounts, TEST_ACCOUNT_IDS } from '../lib/testAccounts';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell
 } from 'recharts';
-import { CHART_PALETTE, STATUS_COLORS, tooltipStyle, gridStyle, axisStyle } from '../lib/chartTheme';
+import { CHART_PALETTE, STATUS_COLORS, tooltipStyle, tooltipItemStyle, gridStyle, axisStyle } from '../lib/chartTheme';
 
 interface Stats {
   totalUsers: number;
@@ -27,28 +29,39 @@ interface Stats {
   activeWorkers: number;
   copierPausedUsers: number;
   copierEngineOffline: number;
+  recoveringBrokers: number;
 }
 
-function StatCard({ label, value, sub, color = 'text-slate-900 dark:text-slate-100' }: {
+function StatCard({ label, value, sub, color = 'text-slate-900 dark:text-slate-100', subColor = 'text-slate-400' }: {
   label: string;
   value: string | number;
   sub?: string;
   color?: string;
+  subColor?: string;
 }) {
   return (
     <div className="stat-card">
       <p className="stat-label">{label}</p>
       <p className={`stat-value text-2xl ${color}`}>{value}</p>
-      {sub && <p className="text-xs text-slate-400 mt-0.5">{sub}</p>}
+      {sub && <p className={`text-xs mt-0.5 ${subColor}`}>{sub}</p>}
     </div>
   );
+}
+
+interface SignalStatusRow {
+  status: string;
+  total: number | string;
 }
 
 export function OverviewPage() {
   const [stats, setStats] = useState<Partial<Stats>>({});
   const [loading, setLoading] = useState(true);
+  const [funnelError, setFunnelError] = useState<string | null>(null);
+  const [hideTestAccounts] = useHideTestAccounts();
 
   useEffect(() => {
+    let cancelled = false;
+
     async function fetchStats() {
       const now = new Date();
       const todayBoundary = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -64,35 +77,61 @@ export function OverviewPage() {
         { count: activeTelegramChannels },
         { count: signalsToday },
         { data: tradeStats },
-        { data: signalsByStatus },
+        { data: signalStatusCounts, error: signalStatusError },
         { data: topUsersRaw },
         { data: workerLeases },
         { count: copierPausedCount },
         { data: activeTelegramSessions },
         { data: sessionProfiles },
       ] = await Promise.all([
-        adminSupabase.from('user_profiles').select('*', { count: 'exact', head: true }),
-        adminSupabase.from('user_profiles').select('*', { count: 'exact', head: true })
-          .gte('created_at', todayBoundary.toISOString()),
-        adminSupabase.from('user_profiles').select('*', { count: 'exact', head: true })
-          .gte('created_at', weekBoundary.toISOString()),
-        adminSupabase.from('subscriptions').select('user_id, plan, status, trial_ends_at'),
+        withoutTestAccounts(
+          adminSupabase.from('user_profiles').select('*', { count: 'exact', head: true }),
+          hideTestAccounts,
+        ),
+        withoutTestAccounts(
+          adminSupabase.from('user_profiles').select('*', { count: 'exact', head: true })
+            .gte('created_at', todayBoundary.toISOString()),
+          hideTestAccounts,
+        ),
+        withoutTestAccounts(
+          adminSupabase.from('user_profiles').select('*', { count: 'exact', head: true })
+            .gte('created_at', weekBoundary.toISOString()),
+          hideTestAccounts,
+        ),
+        withoutTestAccounts(
+          adminSupabase.from('subscriptions').select('user_id, plan, status, trial_ends_at'),
+          hideTestAccounts,
+        ),
         adminSupabase.from('broker_accounts').select('connection_status'),
         adminSupabase.from('telegram_channels').select('*', { count: 'exact', head: true })
           .eq('is_active', true),
-        adminSupabase.from('signals').select('*', { count: 'exact', head: true })
-          .gte('created_at', todayBoundary.toISOString()),
-        adminSupabase.from('trades')
-          .select('lot_size, profit, direction, entry_price, cwe_close_price')
-          .eq('status', 'closed')
-          .gte('closed_at', todayBoundary.toISOString()),
-        adminSupabase.from('signals').select('status'),
-        adminSupabase.from('trades')
-          .select('user_id, profit, direction, entry_price, cwe_close_price')
-          .gte('closed_at', weekBoundary.toISOString()),
+        withoutTestAccounts(
+          adminSupabase.from('signals').select('*', { count: 'exact', head: true })
+            .gte('created_at', todayBoundary.toISOString()),
+          hideTestAccounts,
+        ),
+        withoutTestAccounts(
+          adminSupabase.from('trades')
+            .select('lot_size, profit, direction, entry_price, cwe_close_price')
+            .eq('status', 'closed')
+            .gte('closed_at', todayBoundary.toISOString()),
+          hideTestAccounts,
+        ),
+        adminSupabase.rpc('admin_signal_status_counts', {
+          p_exclude: hideTestAccounts ? TEST_ACCOUNT_IDS : [],
+        }),
+        withoutTestAccounts(
+          adminSupabase.from('trades')
+            .select('user_id, profit, direction, entry_price, cwe_close_price')
+            .gte('closed_at', weekBoundary.toISOString()),
+          hideTestAccounts,
+        ),
         adminSupabase.from('worker_session_leases').select('user_id, expires_at, role'),
-        adminSupabase.from('user_profiles').select('*', { count: 'exact', head: true })
-          .eq('copier_paused', true),
+        withoutTestAccounts(
+          adminSupabase.from('user_profiles').select('*', { count: 'exact', head: true })
+            .eq('copier_paused', true),
+          hideTestAccounts,
+        ),
         adminSupabase.from('telegram_sessions').select('user_id').eq('is_active', true),
         adminSupabase.from('user_profiles').select('user_id, copier_paused, is_admin, admin_until'),
       ]);
@@ -128,12 +167,9 @@ export function OverviewPage() {
       const lotsToday = todayTrades.reduce((sum: number, t) => sum + Number(t.lot_size ?? 0), 0);
 
 
-      // Signal stats
-      const sigMap: Record<string, number> = {};
-      (signalsByStatus ?? []).forEach((s) => {
-        sigMap[s.status ?? 'unknown'] = (sigMap[s.status ?? 'unknown'] ?? 0) + 1;
-      });
-      const signalsByStatusArr = Object.entries(sigMap).map(([status, count]) => ({ status, count }));
+      // Signal stats — counted in the database (no 1,000-row cap)
+      const signalsByStatusArr = ((signalStatusCounts ?? []) as SignalStatusRow[])
+        .map(r => ({ status: r.status, count: Number(r.total) }));
 
       // Top users — fetch display names separately
       const uniqueUserIds = [...new Set((topUsersRaw ?? []).map((t) => t.user_id).filter(Boolean))];
@@ -209,6 +245,8 @@ export function OverviewPage() {
           })
       ).size;
 
+      if (cancelled) return;
+
       setStats({
         totalUsers: totalUsers ?? 0,
         newToday: newToday ?? 0,
@@ -216,6 +254,7 @@ export function OverviewPage() {
         subscriptionsByPlan,
         connectedBrokers: statusMap['connected'] ?? 0,
         errorBrokers: statusMap['error'] ?? 0,
+        recoveringBrokers: statusMap['recovering'] ?? 0,
         activeTelegramChannels: activeTelegramChannels ?? 0,
         signalsToday: signalsToday ?? 0,
         tradesToday,
@@ -226,11 +265,15 @@ export function OverviewPage() {
         copierPausedUsers: copierPausedCount ?? 0,
         copierEngineOffline,
       });
+      setFunnelError(signalStatusError ? signalStatusError.message : null);
       setLoading(false);
     }
 
     fetchStats();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [hideTestAccounts]);
 
   if (loading) {
     return (
@@ -247,9 +290,12 @@ export function OverviewPage() {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <div className="page-header">
-        <h1 className="page-title">Overview</h1>
-        <p className="page-subtitle">Platform-wide metrics and health</p>
+      <div className="page-header flex items-start justify-between gap-3">
+        <div>
+          <h1 className="page-title">Overview</h1>
+          <p className="page-subtitle">Platform-wide metrics and health</p>
+        </div>
+        <HideTestAccountsToggle />
       </div>
 
       {/* User Stats */}
@@ -277,7 +323,15 @@ export function OverviewPage() {
         <h2 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">Platform Health</h2>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <StatCard label="Connected Brokers" value={stats.connectedBrokers ?? 0} color="text-success-600" />
-          <StatCard label="Broker Errors" value={stats.errorBrokers ?? 0} color="text-error-600" />
+          <Link to="/brokers/errors" className="block hover:opacity-90 transition-opacity">
+            <StatCard
+              label="Broker Errors"
+              value={stats.errorBrokers ?? 0}
+              color="text-error-600"
+              sub={(stats.recoveringBrokers ?? 0) > 0 ? `${stats.recoveringBrokers} reconnecting` : undefined}
+              subColor="text-warning-600"
+            />
+          </Link>
           <StatCard label="Active Telegram Channels" value={stats.activeTelegramChannels ?? 0} color="text-primary-600" />
         </div>
       </section>
@@ -325,19 +379,26 @@ export function OverviewPage() {
             <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Signal Funnel (All Time)</h3>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={stats.signalsByStatus ?? []}>
-                <CartesianGrid {...gridStyle} />
-                <XAxis dataKey="status" {...axisStyle} />
-                <YAxis {...axisStyle} />
-                <Tooltip contentStyle={tooltipStyle} />
-                <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-                  {(stats.signalsByStatus ?? []).map((entry, i) => (
-                    <Cell key={i} fill={STATUS_COLORS[entry.status] ?? CHART_PALETTE[i % CHART_PALETTE.length]} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+            {funnelError ? (
+              <div className="h-48 flex flex-col items-center justify-center gap-1 text-center px-4">
+                <p className="text-sm font-medium text-error-600 dark:text-error-400">Signal counts are unavailable</p>
+                <p className="text-xs text-slate-400">{funnelError}</p>
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={200}>
+                <BarChart data={stats.signalsByStatus ?? []}>
+                  <CartesianGrid {...gridStyle} />
+                  <XAxis dataKey="status" {...axisStyle} />
+                  <YAxis {...axisStyle} />
+                  <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} />
+                  <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                    {(stats.signalsByStatus ?? []).map((entry, i) => (
+                      <Cell key={i} fill={STATUS_COLORS[entry.status] ?? CHART_PALETTE[i % CHART_PALETTE.length]} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </CardContent>
         </Card>
 
@@ -364,7 +425,7 @@ export function OverviewPage() {
                       <Cell key={i} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />
                     ))}
                   </Pie>
-                  <Tooltip contentStyle={tooltipStyle} />
+                  <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} />
                 </PieChart>
               </ResponsiveContainer>
             ) : (

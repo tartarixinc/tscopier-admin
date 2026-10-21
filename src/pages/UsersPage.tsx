@@ -9,6 +9,7 @@ import { ExportButton } from '../components/ExportButton';
 import { Input } from '../components/ui/Input';
 import { Select } from '../components/ui/Select';
 import { Card } from '../components/ui/Card';
+import { pauseReasonLabel } from '../lib/pauseReasons';
 import { Search, X, AlertTriangle } from 'lucide-react';
 import type { Column } from '../components/DataTable';
 
@@ -19,11 +20,13 @@ interface UserRow {
   timezone: string | null;
   is_admin: boolean;
   copier_paused: boolean | null;
+  copier_pause_reason: string | null;
   subscription_status: string | null;
   onboarding_completed_at: string | null;
   created_at: string;
   plan: string | null;
   sub_status: string | null;
+  canceled_at: string | null;
 }
 
 const PAGE_SIZE = 50;
@@ -131,7 +134,7 @@ export function UsersPage() {
       // Fetch profiles page
       let q = adminSupabase
         .from('user_profiles')
-        .select('user_id, display_name, country, timezone, is_admin, copier_paused, subscription_status, onboarding_completed_at, created_at', { count: 'exact' })
+        .select('user_id, display_name, country, timezone, is_admin, copier_paused, copier_pause_reason, subscription_status, onboarding_completed_at, created_at', { count: 'exact' })
         .order('created_at', { ascending: false })
         .range(from, to);
 
@@ -146,14 +149,14 @@ export function UsersPage() {
       const userIds = (profiles ?? []).map((p) => p.user_id);
 
       // Fetch subscriptions separately
-      const subs: Record<string, { plan: string | null; status: string | null }> = {};
+      const subs: Record<string, { plan: string | null; status: string | null; canceled_at: string | null }> = {};
       if (userIds.length > 0) {
         const { data: subRows } = await adminSupabase
           .from('subscriptions')
-          .select('user_id, plan, status')
+          .select('user_id, plan, status, canceled_at')
           .in('user_id', userIds);
         (subRows ?? []).forEach((s) => {
-          subs[s.user_id] = { plan: s.plan, status: s.status };
+          subs[s.user_id] = { plan: s.plan, status: s.status, canceled_at: s.canceled_at };
         });
       }
 
@@ -164,11 +167,13 @@ export function UsersPage() {
         timezone: r.timezone,
         is_admin: r.is_admin,
         copier_paused: r.copier_paused,
+        copier_pause_reason: r.copier_pause_reason,
         subscription_status: r.subscription_status,
         onboarding_completed_at: r.onboarding_completed_at,
         created_at: r.created_at,
         plan: subs[r.user_id]?.plan ?? null,
         sub_status: subs[r.user_id]?.status ?? null,
+        canceled_at: subs[r.user_id]?.canceled_at ?? null,
       }));
 
       // Client-side sub_status filter (count already reflects profiles, not subs)
@@ -208,11 +213,25 @@ export function UsersPage() {
       render: r => r.sub_status ? <StatusBadge status={r.sub_status} /> : <span className="text-slate-400 text-xs">—</span>,
     },
     {
+      key: 'canceled_at',
+      label: 'Canceled',
+      render: r => r.canceled_at
+        ? <span className="text-xs text-slate-500 dark:text-slate-400">{formatDateOnly(r.canceled_at)}</span>
+        : <span className="text-slate-400 text-xs">—</span>,
+    },
+    {
       key: 'copier_paused',
       label: 'Copier',
       render: r => r.copier_paused
         ? <span className="badge bg-warning-100 text-warning-800 dark:bg-warning-900/40 dark:text-warning-300 text-xs">Paused</span>
         : <span className="text-success-600 dark:text-success-400 text-xs font-medium">Active</span>,
+    },
+    {
+      key: 'copier_pause_reason',
+      label: 'Pause Reason',
+      render: r => !r.copier_paused
+        ? <span className="text-slate-400 text-xs">—</span>
+        : <span className="text-xs text-warning-700 dark:text-warning-400 font-medium">{pauseReasonLabel(r.copier_pause_reason)}</span>,
     },
     {
       key: 'onboarding_completed_at',

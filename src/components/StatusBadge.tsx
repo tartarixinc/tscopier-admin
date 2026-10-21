@@ -34,6 +34,10 @@ const STATUS_MAP: Record<string, Variant> = {
   buy: 'success',
   // copier log status
   success: 'success',
+  // invoice payment status
+  paid: 'success',
+  partial_refund: 'warning',
+  refunded: 'muted',
   // generic
   true: 'success',
   false: 'muted',

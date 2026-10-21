@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { authSupabase as adminSupabase } from '../lib/adminSupabase';
 import { formatDateOnly } from '../lib/formatters';
 import { Card, CardHeader, CardContent } from '../components/ui/Card';
-import { CHART_COLORS, tooltipStyle, gridStyle, axisStyle } from '../lib/chartTheme';
+import { CHART_COLORS, tooltipStyle, tooltipItemStyle, gridStyle, axisStyle } from '../lib/chartTheme';
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { TrendingDown, TrendingUp } from 'lucide-react';
 import clsx from 'clsx';
@@ -231,7 +231,7 @@ export function ErrorsAnalyticsPage() {
               <CartesianGrid {...gridStyle} />
               <XAxis dataKey="date" {...axisStyle} tickFormatter={d => d.slice(5)} interval="preserveStartEnd" />
               <YAxis {...axisStyle} allowDecimals={false} />
-              <Tooltip contentStyle={tooltipStyle} labelFormatter={d => formatDateOnly(String(d))} />
+              <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} labelFormatter={d => formatDateOnly(String(d))} />
               {SOURCE_META.map(s => (
                 <Bar key={s.key} dataKey={s.key} name={s.label} stackId="errors" fill={s.color} />
               ))}
@@ -263,7 +263,7 @@ export function ErrorsAnalyticsPage() {
                 <CartesianGrid {...gridStyle} />
                 <XAxis dataKey="date" {...axisStyle} tickFormatter={d => d.slice(5)} interval="preserveStartEnd" />
                 <YAxis {...axisStyle} allowDecimals={false} />
-                <Tooltip contentStyle={tooltipStyle} labelFormatter={d => formatDateOnly(String(d))} formatter={(v) => [Number(v).toLocaleString(), 'Total errors']} />
+                <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} labelFormatter={d => formatDateOnly(String(d))} formatter={(v) => [Number(v).toLocaleString(), 'Total errors']} />
                 <Area type="monotone" dataKey="total" stroke={CHART_COLORS.error} strokeWidth={2} fill="url(#errorsGrad)" />
               </AreaChart>
             </ResponsiveContainer>
