@@ -7,7 +7,7 @@ import { Card, CardHeader, CardContent } from '../components/ui/Card';
 import { StatusBadge } from '../components/StatusBadge';
 import { JsonViewer } from '../components/JsonViewer';
 import { Button } from '../components/ui/Button';
-import { CHART_PALETTE, tooltipStyle, gridStyle, axisStyle } from '../lib/chartTheme';
+import { CHART_PALETTE, tooltipStyle, tooltipItemStyle, gridStyle, axisStyle } from '../lib/chartTheme';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
@@ -171,7 +171,7 @@ export function BacktestRunDetailPage() {
                 <XAxis dataKey="ts" {...axisStyle} interval="preserveStartEnd" />
                 <YAxis yAxisId="left" {...axisStyle} tickFormatter={v => `$${v.toFixed(0)}`} />
                 <YAxis yAxisId="right" orientation="right" {...axisStyle} tickFormatter={v => `${v.toFixed(1)}%`} />
-                <Tooltip contentStyle={tooltipStyle} />
+                <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} />
                 <Legend />
                 <Line yAxisId="left" type="monotone" dataKey="equity" stroke={CHART_PALETTE[0]} dot={false} strokeWidth={2} name="Equity" />
                 <Line yAxisId="left" type="monotone" dataKey="balance" stroke={CHART_PALETTE[1]} dot={false} strokeWidth={1.5} strokeDasharray="4 2" name="Balance" />

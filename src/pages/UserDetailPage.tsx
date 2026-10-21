@@ -11,6 +11,7 @@ import { Modal } from '../components/ui/Modal';
 import { ChannelBrokerConfigs } from '../components/user/ChannelBrokerConfigs';
 import { Pagination } from '../components/DataTable';
 import { UserActivityTabs } from '../components/user/UserActivityTabs';
+import { pauseReasonLabel } from '../lib/pauseReasons';
 
 interface UserProfile {
   user_id: string;
@@ -25,6 +26,7 @@ interface UserProfile {
   is_admin: boolean;
   admin_until: string | null;
   copier_paused: boolean | null;
+  copier_pause_reason: string | null;
   onboarding_completed_at: string | null;
   referred_by_user_id: string | null;
   email_verified_at: string | null;
@@ -41,7 +43,21 @@ interface Subscription {
   extra_accounts: number;
   trial_ends_at: string | null;
   current_period_end: string | null;
+  canceled_at: string | null;
   created_at: string;
+}
+
+interface InvoicePaymentRow {
+  id: string;
+  stripe_invoice_id: string;
+  amount_paid_cents: number;
+  amount_refunded_cents: number;
+  currency: string;
+  status: string;
+  paid_at: string | null;
+  period_start: string | null;
+  period_end: string | null;
+  refunded_at: string | null;
 }
 
 interface TelegramAccount {
@@ -113,6 +129,7 @@ interface TgClaimRow {
 }
 
 const REPORTED_TRADES_PAGE_SIZE = 25;
+const PAYMENTS_PAGE_SIZE = 50;
 
 function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -149,6 +166,12 @@ export function UserDetailPage() {
   const [reportedTradesPage, setReportedTradesPage] = useState(1);
   const [reportedTradesTotal, setReportedTradesTotal] = useState(0);
   const [reportedTradesLoading, setReportedTradesLoading] = useState(false);
+  const [showPayments, setShowPayments] = useState(false);
+  const [payments, setPayments] = useState<InvoicePaymentRow[]>([]);
+  const [paymentsTotal, setPaymentsTotal] = useState(0);
+  const [paymentsPage, setPaymentsPage] = useState(1);
+  const [paymentsLoading, setPaymentsLoading] = useState(false);
+  const [paymentsError, setPaymentsError] = useState<string | null>(null);
   const [loadedUserId, setLoadedUserId] = useState<string | null>(null);
   const userDetailLoadGenerationRef = useRef(0);
   const mountedRef = useRef(true);
@@ -348,6 +371,36 @@ export function UserDetailPage() {
   }, [reportedTradesPage, showReportedTrades, userId]);
 
   useEffect(() => {
+    if (!userId || !showPayments) return;
+    let cancelled = false;
+    setPaymentsLoading(true);
+    setPaymentsError(null);
+
+    (async () => {
+      const from = (paymentsPage - 1) * PAYMENTS_PAGE_SIZE;
+      const { data, count, error } = await adminSupabase
+        .from('invoice_payments')
+        .select('id, stripe_invoice_id, amount_paid_cents, amount_refunded_cents, currency, status, paid_at, period_start, period_end, refunded_at', { count: 'exact' })
+        .eq('user_id', userId)
+        .order('paid_at', { ascending: false, nullsFirst: false })
+        .range(from, from + PAYMENTS_PAGE_SIZE - 1);
+      if (cancelled) return;
+      if (error) {
+        setPaymentsError(error.message);
+        setPayments([]);
+        setPaymentsTotal(0);
+        setPaymentsLoading(false);
+        return;
+      }
+      setPayments((data ?? []) as InvoicePaymentRow[]);
+      setPaymentsTotal(count ?? 0);
+      setPaymentsLoading(false);
+    })();
+
+    return () => { cancelled = true; };
+  }, [paymentsPage, showPayments, userId]);
+
+  useEffect(() => {
     if (!userId || !showTelegramEvents) return;
     let cancelled = false;
     setTelegramEventsLoading(true);
@@ -474,6 +527,7 @@ export function UserDetailPage() {
             <InfoRow label="Timezone" value={profile.timezone} />
             <InfoRow label="Base Currency" value={profile.base_currency} />
             <InfoRow label="Copier" value={profile.copier_paused ? <span className="text-warning-600 dark:text-warning-400 font-medium">Paused</span> : <span className="text-success-600 dark:text-success-400 font-medium">Active</span>} />
+            <InfoRow label="Pause Reason" value={profile.copier_paused ? pauseReasonLabel(profile.copier_pause_reason) : null} />
             <InfoRow label="Onboarded" value={profile.onboarding_completed_at ? formatDate(profile.onboarding_completed_at) : 'Not completed'} />
             <InfoRow label="Email Verified" value={profile.email_verified_at ? formatDate(profile.email_verified_at) : 'Not verified'} />
             <InfoRow label="Admin Until" value={profile.admin_until ? formatDateOnly(profile.admin_until) : (profile.is_admin ? 'Permanent' : '—')} />
@@ -494,6 +548,7 @@ export function UserDetailPage() {
                   <InfoRow label="Extra Accounts" value={subscription.extra_accounts} />
                   <InfoRow label="Period End" value={formatDateOnly(subscription.current_period_end)} />
                   <InfoRow label="Trial Ends" value={formatDateOnly(subscription.trial_ends_at)} />
+                  <InfoRow label="Canceled At" value={subscription.canceled_at ? formatDateOnly(subscription.canceled_at) : null} />
                   <InfoRow label="Stripe Customer" value={<span className="font-mono text-xs">{subscription.stripe_customer_id ?? '—'}</span>} />
                   <InfoRow label="Stripe Sub ID" value={<span className="font-mono text-xs break-all">{subscription.stripe_subscription_id ?? '—'}</span>} />
                 </>
@@ -547,6 +602,72 @@ export function UserDetailPage() {
           </div>
         ))}
       </div>
+
+      {/* Payment history */}
+      <Card>
+        <CardHeader>
+          <button
+            className="flex items-center justify-between w-full gap-2 group"
+            onClick={() => {
+              setShowPayments(!showPayments);
+              if (!showPayments) setPaymentsPage(1);
+            }}
+          >
+            <h3 className="text-sm font-semibold">Payment History {showPayments ? `(${paymentsTotal.toLocaleString()})` : ''}</h3>
+            <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showPayments ? 'rotate-180' : ''}`} />
+          </button>
+        </CardHeader>
+        {showPayments && (
+          <>
+            {paymentsError && (
+              <div className="px-4 pb-4 text-sm text-red-600 dark:text-red-400">{paymentsError}</div>
+            )}
+            <div className="overflow-x-auto">
+              <table className="table-base">
+                <thead><tr><th>Paid</th><th>Amount</th><th>Refunded</th><th>Status</th><th>Service Period</th></tr></thead>
+                <tbody>
+                  {paymentsLoading ? (
+                    Array.from({ length: 4 }).map((_, index) => (
+                      <tr key={index}>
+                        <td colSpan={5} className="px-4 py-3"><div className="skeleton h-4 w-full" /></td>
+                      </tr>
+                    ))
+                  ) : payments.length === 0 ? (
+                    <tr><td colSpan={5} className="text-center py-6 text-slate-400">
+                      {paymentsError ? 'Payments could not be read' : 'No payments recorded yet'}
+                    </td></tr>
+                  ) : payments.map(p => (
+                    <tr key={p.id}>
+                      <td className="text-xs">{p.paid_at ? formatDate(p.paid_at) : '—'}</td>
+                      <td className="font-medium">{formatCurrency(p.amount_paid_cents / 100, p.currency.toUpperCase())}</td>
+                      <td className="text-xs">
+                        {p.amount_refunded_cents > 0
+                          ? <span className="text-red-600 dark:text-red-400">−{formatCurrency(p.amount_refunded_cents / 100, p.currency.toUpperCase())}</span>
+                          : '—'}
+                      </td>
+                      <td><StatusBadge status={p.status} /></td>
+                      <td className="text-xs text-slate-400">
+                        {p.period_start && p.period_end
+                          ? `${formatDateOnly(p.period_start)} → ${formatDateOnly(p.period_end)}`
+                          : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {paymentsTotal > PAYMENTS_PAGE_SIZE && (
+              <Pagination
+                page={paymentsPage}
+                totalPages={Math.max(1, Math.ceil(paymentsTotal / PAYMENTS_PAGE_SIZE))}
+                totalCount={paymentsTotal}
+                pageSize={PAYMENTS_PAGE_SIZE}
+                onPageChange={setPaymentsPage}
+              />
+            )}
+          </>
+        )}
+      </Card>
 
       {/* Broker accounts */}
       <Card>

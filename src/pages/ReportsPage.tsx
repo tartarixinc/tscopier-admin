@@ -12,7 +12,7 @@ import { ReportDetailModal, CATEGORY_LABELS, type ReportRow } from '../component
 import { Search, FileWarning } from 'lucide-react';
 import clsx from 'clsx';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie, Legend } from 'recharts';
-import { CHART_PALETTE, tooltipStyle, gridStyle, axisStyle } from '../lib/chartTheme';
+import { CHART_PALETTE, tooltipStyle, tooltipItemStyle, gridStyle, axisStyle } from '../lib/chartTheme';
 import type { Column } from '../components/DataTable';
 
 const PAGE_SIZE = 50;
@@ -192,7 +192,7 @@ export function ReportsPage() {
                   <CartesianGrid {...gridStyle} vertical={false} />
                   <XAxis dataKey="name" {...axisStyle} />
                   <YAxis {...axisStyle} allowDecimals={false} />
-                  <Tooltip contentStyle={tooltipStyle} cursor={{ fill: 'rgba(148,163,184,0.1)' }} />
+                  <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} cursor={{ fill: 'rgba(148,163,184,0.1)' }} />
                   <Bar dataKey="value" name="Reports" radius={[4, 4, 0, 0]}>
                     {summary.statusData.map((_, i) => <Cell key={i} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />)}
                   </Bar>
@@ -215,7 +215,7 @@ export function ReportsPage() {
                   <Pie data={summary.directionData} dataKey="value" nameKey="name" innerRadius={45} outerRadius={70} paddingAngle={2}>
                     {summary.directionData.map((_, i) => <Cell key={i} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />)}
                   </Pie>
-                  <Tooltip contentStyle={tooltipStyle} />
+                  <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
                 </PieChart>
               </ResponsiveContainer>

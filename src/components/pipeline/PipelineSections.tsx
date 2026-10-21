@@ -9,7 +9,7 @@ import type { PipelineIssue } from '../../lib/pipelineIssues';
 import { JsonViewer } from '../JsonViewer';
 import { StatusBadge } from '../StatusBadge';
 import { Badge } from '../ui/Badge';
-import { tooltipStyle, gridStyle, axisStyle } from '../../lib/chartTheme';
+import { tooltipStyle, tooltipItemStyle, gridStyle, axisStyle } from '../../lib/chartTheme';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import clsx from 'clsx';
 
@@ -151,7 +151,7 @@ export function LatencyGanttSection({ durations }: { durations?: Record<string, 
           <XAxis type="number" dataKey="offset" {...axisStyle} tickFormatter={v => `+${durationText(Number(v))}`} />
           <YAxis type="category" dataKey="name" width={140} {...axisStyle} />
           <Tooltip
-            contentStyle={tooltipStyle}
+            contentStyle={tooltipStyle} itemStyle={tooltipItemStyle}
             formatter={(v, name, item) => {
               const d = (item?.payload as { offset?: number; dur?: number } | undefined) ?? {};
               if (name === 'dur') return [durationText(d.dur ?? 0), 'Duration'];

@@ -5,6 +5,7 @@ import { LoginPage } from './pages/LoginPage';
 import { OverviewPage } from './pages/OverviewPage';
 import { UsersPage } from './pages/UsersPage';
 import { UserDetailPage } from './pages/UserDetailPage';
+import { SubscriptionsStatsPage } from './pages/SubscriptionsStatsPage';
 import { BrokerAccountsPage } from './pages/BrokerAccountsPage';
 import { BrokerErrorsPage } from './pages/BrokerErrorsPage';
 import { MtapiReconnectsPage } from './pages/MtapiReconnectsPage';
@@ -52,6 +53,7 @@ export default function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/" element={<ProtectedLayout><OverviewPage /></ProtectedLayout>} />
         <Route path="/users" element={<ProtectedLayout><UsersPage /></ProtectedLayout>} />
+        <Route path="/users/subscriptions" element={<ProtectedLayout><SubscriptionsStatsPage /></ProtectedLayout>} />
         <Route path="/users/:userId" element={<ProtectedLayout><UserDetailPage /></ProtectedLayout>} />
         <Route path="/brokers" element={<ProtectedLayout><BrokerAccountsPage /></ProtectedLayout>} />
         <Route path="/brokers/errors" element={<ProtectedLayout><BrokerErrorsPage /></ProtectedLayout>} />

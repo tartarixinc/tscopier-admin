@@ -5,7 +5,8 @@ import { Card, CardHeader, CardContent } from './ui/Card';
 import { UserLink } from './UserLink';
 import { Select } from './ui/Select';
 import { TradePipelineModal } from './TradePipelineModal';
-import { CHART_PALETTE, tooltipStyle, gridStyle, axisStyle } from '../lib/chartTheme';
+import { useHideTestAccounts, withoutTestAccounts } from '../lib/testAccounts';
+import { CHART_PALETTE, tooltipStyle, tooltipItemStyle, gridStyle, axisStyle } from '../lib/chartTheme';
 import clsx from 'clsx';
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -65,6 +66,7 @@ export function PnlAnalyticsTab({ rangeDays }: { rangeDays: number | null }) {
   const [loading, setLoading] = useState(true);
   const [capped, setCapped] = useState(false);
   const [pnlFilter, setPnlFilter] = useState<'all' | 'winners' | 'losers'>('all');
+  const [hideTestAccounts] = useHideTestAccounts();
   const [selectedTrade, setSelectedTrade] = useState<{
     id: string;
     symbol: string;
@@ -109,6 +111,8 @@ export function PnlAnalyticsTab({ rangeDays }: { rangeDays: number | null }) {
           from.setDate(from.getDate() - rangeDays);
           q = q.gte('closed_at', from.toISOString());
         }
+
+        q = withoutTestAccounts(q, hideTestAccounts);
 
         const fromIdx = page * PAGE_SIZE;
         const { data } = await q.range(fromIdx, fromIdx + PAGE_SIZE - 1);
@@ -190,7 +194,7 @@ export function PnlAnalyticsTab({ rangeDays }: { rangeDays: number | null }) {
     })();
 
     return () => { cancelled = true; };
-  }, [rangeDays]);
+  }, [rangeDays, hideTestAccounts]);
 
   const visibleTrades = useMemo(() => {
     const filtered = pnlFilter === 'all'
@@ -266,7 +270,7 @@ export function PnlAnalyticsTab({ rangeDays }: { rangeDays: number | null }) {
                 <CartesianGrid {...gridStyle} />
                 <XAxis dataKey="date" {...axisStyle} tickFormatter={d => d.slice(5)} interval="preserveStartEnd" />
                 <YAxis {...axisStyle} tickFormatter={v => formatCurrency(Number(v))} />
-                <Tooltip contentStyle={tooltipStyle} formatter={(v) => [formatCurrency(Number(v)), 'Cumulative P&L']} />
+                <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} formatter={(v) => [formatCurrency(Number(v)), 'Cumulative P&L']} />
                 <ReferenceLine y={0} stroke="#334155" />
                 <Area type="monotone" dataKey="pnl" stroke={netPnl >= 0 ? '#22c55e' : '#ef4444'} strokeWidth={2} fill="url(#pnlGrad)" />
               </AreaChart>
@@ -284,7 +288,7 @@ export function PnlAnalyticsTab({ rangeDays }: { rangeDays: number | null }) {
                     <Cell key={i} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />
                   ))}
                 </Pie>
-                <Tooltip contentStyle={tooltipStyle} />
+                <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} />
               </PieChart>
             </ResponsiveContainer>
             <div className="flex justify-center gap-4 text-xs">
@@ -307,7 +311,7 @@ export function PnlAnalyticsTab({ rangeDays }: { rangeDays: number | null }) {
               <CartesianGrid {...gridStyle} />
               <XAxis dataKey="date" {...axisStyle} tickFormatter={d => d.slice(5)} interval="preserveStartEnd" />
               <YAxis {...axisStyle} tickFormatter={v => formatCurrency(Number(v))} />
-              <Tooltip contentStyle={tooltipStyle} formatter={(v) => [formatCurrency(Number(v)), 'P&L']} />
+              <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} formatter={(v) => [formatCurrency(Number(v)), 'P&L']} />
               <ReferenceLine y={0} stroke="#334155" />
               <Bar dataKey="pnl" radius={[3, 3, 0, 0]}>
                 {dailyPnl.map((entry, i) => (

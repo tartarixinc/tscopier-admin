@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Server, MessageSquare, Zap, TrendingUp,
   FlaskConical, LogOut,
   Search, UserCircle, Activity, DollarSign, Cog, Menu, X, AlertTriangle,
-  Copy, Cpu, ShieldAlert, FileWarning, MessagesSquare, RefreshCw, Mail
+  Copy, Cpu, ShieldAlert, FileWarning, MessagesSquare, RefreshCw, Mail, CreditCard
 } from 'lucide-react';
 import { ThemeToggle } from './ui/ThemeToggle';
 import { authSupabase } from '../lib/adminSupabase';
@@ -37,6 +37,7 @@ const navigation: NavGroup[] = [
     title: 'Users',
     items: [
       { label: 'All Users', to: '/users', icon: Users },
+      { label: 'Subscription Stats', to: '/users/subscriptions', icon: CreditCard },
     ],
   },
   {

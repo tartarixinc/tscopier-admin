@@ -38,6 +38,23 @@ export const STATUS_COLORS: Record<string, string> = {
   inactive: '#94a3b8',
   basic: CHART_COLORS.info,
   advanced: CHART_COLORS.primary,
+  trialing: CHART_COLORS.purple,
+  past_due: CHART_COLORS.warning,
+  canceled: '#94a3b8',
+  incomplete: CHART_COLORS.pink,
+  incomplete_expired: '#64748b',
+  unpaid: CHART_COLORS.error,
+  unknown: '#475569',
+};
+
+export const REASON_COLORS: Record<string, string> = {
+  user_paused: CHART_COLORS.info,
+  trial_expired: CHART_COLORS.purple,
+  payment_failed: CHART_COLORS.error,
+  subscription_ended: '#94a3b8',
+  admin: CHART_COLORS.warning,
+  unknown: '#64748b',
+  unrecorded: '#475569',
 };
 
 export const tooltipStyle = {
