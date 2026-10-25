@@ -19,6 +19,8 @@ import { TradesPage } from './pages/TradesPage';
 import { OpenPositionsPage } from './pages/OpenPositionsPage';
 import { TradeExecutionLogsPage } from './pages/TradeExecutionLogsPage';
 import { TradesAnalyticsPage } from './pages/TradesAnalyticsPage';
+import { TradingHoursPage } from './pages/TradingHoursPage';
+import { AuditLogsPage } from './pages/AuditLogsPage';
 import { BacktestRunsPage } from './pages/BacktestRunsPage';
 import { BacktestRunDetailPage } from './pages/BacktestRunDetailPage';
 import { ListenerEventsPage } from './pages/ListenerEventsPage';
@@ -68,6 +70,7 @@ export default function App() {
         <Route path="/trades/open" element={<ProtectedLayout><OpenPositionsPage /></ProtectedLayout>} />
         <Route path="/trades/execution-logs" element={<ProtectedLayout><TradeExecutionLogsPage /></ProtectedLayout>} />
         <Route path="/trades/analytics" element={<ProtectedLayout><TradesAnalyticsPage /></ProtectedLayout>} />
+        <Route path="/trades/hours" element={<ProtectedLayout><TradingHoursPage /></ProtectedLayout>} />
         <Route path="/backtests" element={<ProtectedLayout><BacktestRunsPage /></ProtectedLayout>} />
         <Route path="/backtests/:runId" element={<ProtectedLayout><BacktestRunDetailPage /></ProtectedLayout>} />
         <Route path="/monitoring/listener-events" element={<ProtectedLayout><ListenerEventsPage /></ProtectedLayout>} />
@@ -76,6 +79,7 @@ export default function App() {
         <Route path="/monitoring/workers" element={<ProtectedLayout><WorkerLeasesPage /></ProtectedLayout>} />
         <Route path="/monitoring/copier-engine" element={<ProtectedLayout><CopierEnginePage /></ProtectedLayout>} />
         <Route path="/monitoring/dead-letters" element={<ProtectedLayout><DeadLettersPage /></ProtectedLayout>} />
+        <Route path="/monitoring/audit-logs" element={<ProtectedLayout><AuditLogsPage /></ProtectedLayout>} />
         <Route path="/affiliates" element={<ProtectedLayout><AffiliatesPage /></ProtectedLayout>} />
         <Route path="/presets" element={<ProtectedLayout><PresetsPage /></ProtectedLayout>} />
         <Route path="/settings" element={<ProtectedLayout><AppSettingsPage /></ProtectedLayout>} />
