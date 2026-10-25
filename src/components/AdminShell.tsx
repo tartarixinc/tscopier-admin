@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Server, MessageSquare, Zap, TrendingUp,
   FlaskConical, LogOut,
   Search, UserCircle, Activity, DollarSign, Cog, Menu, X, AlertTriangle,
-  Copy, Cpu, ShieldAlert, FileWarning, MessagesSquare, RefreshCw, Mail, CreditCard
+  Copy, Cpu, ShieldAlert, FileWarning, MessagesSquare, RefreshCw, Mail, CreditCard, Clock, ScrollText
 } from 'lucide-react';
 import { ThemeToggle } from './ui/ThemeToggle';
 import { authSupabase } from '../lib/adminSupabase';
@@ -77,6 +77,7 @@ const navigation: NavGroup[] = [
       { label: 'Open Positions', to: '/trades/open', icon: TrendingUp },
       { label: 'Execution Logs', to: '/trades/execution-logs', icon: TrendingUp },
       { label: 'Analytics', to: '/trades/analytics', icon: TrendingUp },
+      { label: 'Trading Hours', to: '/trades/hours', icon: Clock },
       { label: 'Reports', to: '/reports', icon: FileWarning },
     ],
   },
@@ -97,6 +98,7 @@ const navigation: NavGroup[] = [
       { label: 'Worker Leases', to: '/monitoring/workers', icon: Activity },
       { label: 'Copier Engine', to: '/monitoring/copier-engine', icon: Cpu },
       { label: 'Dead Letters', to: '/monitoring/dead-letters', icon: Activity },
+      { label: 'Audit Logs', to: '/monitoring/audit-logs', icon: ScrollText },
     ],
   },
   {
